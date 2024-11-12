@@ -10,14 +10,3 @@ class ServerInterface(ABC):
     def stop_server(self):
         pass
 
-    @abstractmethod
-    def accept_connection(self):
-        pass
-
-    @abstractmethod
-    def send_data(self, data):
-        pass
-
-    @abstractmethod
-    def receive_data(self):
-        pass
