@@ -1,79 +1,55 @@
+from db import Database
+from tee import TEE
+from verifier import Verifier
+from client import Client
 import threading
 import time
-from patient import Patient
-from server_implementation import Server
-from hello_world_client import HelloWorldClient
-from db import DB
-def run_server():
-    server = Server()
-    try:
-        server.start_server()
-    except KeyboardInterrupt:
-        server.stop()
 
-def run_client(name):
-    client = HelloWorldClient(name=name)
-    client.start()
+host = "127.0.0.1"
+client_port = 12345
+verifier_port = 12346
+db_port = 12347
+tee_port = 12348
 
-if __name__ == "__main__":
-    # Start the server in a separate thread
-    server_thread = threading.Thread(target=run_server)
-    server_thread.daemon = True
-    server_thread.start()
+verifier = Verifier(ca_cert_file="certs/ca-cert.pem", self_cert_file="certs/server-cert.pem", key_file="certs/server-key.pem", tee_secret="Secret")
+database = Database(ca_cert_file="certs/ca-cert.pem", self_cert_file="certs/server-cert.pem", key_file="certs/server-key.pem", )
+tee = TEE(ca_cert_file="certs/ca-cert.pem", self_cert_file="certs/server-cert.pem", key_file="certs/server-key.pem", verifier_public_key=verifier.get_public_key())
+client = Client(ca_cert_file="certs/ca-cert.pem", self_cert_file="certs/client-cert.pem", key_file="certs/client-key.pem", tee_public_key=tee.get_public_key(), verifier_public_key=verifier.get_public_key())
 
-    # Give the server a moment to start
-    time.sleep(1)
+def handle_tee():
+    tee.handle_client_request(host, client_port, host, verifier_port, host, db_port)
+    tee.close_connections()
 
-    # Start two clients
-    client1_thread = threading.Thread(target=run_client, args=("Alice",))
-    client2_thread = threading.Thread(target=run_client, args=("Bob",))
+def handle_client():
+    client.send_request(host, client_port, "Ben", "Password", "123456789")
+    client.close_connection()
 
-    client1_thread.start()
-    client2_thread.start()
+def handle_verifier():
+    verifier.tee_public_key = tee.get_public_key()
+    verifier.listen(host, verifier_port)
+    verifier.close_connection()
+def handle_db():
+    database.tee_public_key = tee.get_public_key()
+    database.listen(host, db_port)
+    database.close_connection()
 
-    # Wait for clients to finish
-    client1_thread.join()
-    client2_thread.join()
+tee_thread = threading.Thread(target=handle_tee)
+time.sleep(1)
+client_thread = threading.Thread(target=handle_client)
+verifier_thread = threading.Thread(target=handle_verifier)
+db_thread = threading.Thread(target=handle_db)
+tee_thread.start()
+client_thread.start()
+verifier_thread.start()
+db_thread.start()
 
-    print("Both clients have finished communicating with the server.")
+tee_thread.join()
+client_thread.join()
+verifier_thread.join()
+db_thread.join()
 
-    db = DB()
-    new_patient = Patient(
-        patient_id=12345,
-        public_info={
-            "name": "John Doe",
-            "age": 45,
-            "height": "180",
-        },
-        confidential_data={
-            "condition": "Hypertension",
-            "prescriptions": ["Drug A", "Drug B"],
-            "doctor_notes": "Patient should monitor blood pressure daily."
-        },
-        authorized_doctors=["doctor_id_1"] 
-    )
-    new_patient2 = Patient(
-        patient_id=54321,
-        public_info={
-            "name": "Jane Smith",
-            "age": 32,
-            "height": "165",
-        },
-        confidential_data={
-            "condition": "Diabetes",
-            "prescriptions": ["Insulin"],
-            "doctor_notes": "Patient should avoid sugary foods."
-        },
-        authorized_doctors=["doctor_id_2"]  
-    )
-
-    db.insert_patient(new_patient)
-    db.insert_patient(new_patient2)
-
-    print("Data for authorized doctor:")
-    print(db.get_patient_data(12345, "doctor_id_1"))
-
-    # Retrieve patient data with unauthorized access
-    print("Data for unauthorized doctor:")
-    print(db.get_patient_data(12345, "doctor_id_2"))
-
+verifier.close_connection()
+database.close_connection()
+tee.close_connections()
+database.close_connection()
+time.sleep(1)
