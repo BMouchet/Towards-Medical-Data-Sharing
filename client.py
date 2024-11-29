@@ -1,3 +1,4 @@
+import base64
 from TLS_helper import TLSHelper
 import json
 from nacl.signing import VerifyKey
@@ -31,27 +32,32 @@ class Client:
         attestation = self.verify_attestation(response_json)
         if query_result and attestation:
             pretty_print("CLIENT", "Request was successful")
+            pretty_print("CLIENT", query_result)
         else:
             pretty_print("CLIENT", "Request was unsuccessful")
 
     def verify_result(self, response):
         try:
-            query_result = self.tee_public_key.verify(response['response'].encode())
-            # if time.time() - response['timestamp'] > 300:
-            #     return False
+            response = base64.b64decode(response['response'])
+            pretty_print("CLIENT", f"Response: {response}")
+            query_result = self.tee_public_key.verify(response)
             return query_result
         except Exception as e:
-            pretty_print("CLIENT", "Query validation: {e}")
+            pretty_print("CLIENT", f"Query validation: {e}")
             return False
     
     def verify_attestation(self, response):
         try:
-            attestation = self.verifier_public_key.verify(response['attestation'].encode())
-            # if time.time() - response['timestamp'] > 300:
-            #     return False
+            expiration_time = base64.b64decode(response['expiration'])
+            expiration_time = self.verifier_public_key.verify(expiration_time)
+            if time.time() - float(expiration_time) > 300:
+                pretty_print("CLIENT", "Attestation expired")
+                return False
+            attestation = base64.b64decode(response['attestation'])
+            attestation = self.verifier_public_key.verify(attestation)
             return attestation
         except Exception as e:
-            pretty_print("CLIENT", "Attestation validation: {e}")
+            pretty_print("CLIENT", f"Attestation validation: {e}")
             return False
         
     def close_connection(self):

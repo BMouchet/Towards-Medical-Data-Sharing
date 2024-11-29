@@ -59,27 +59,45 @@ class Verifier:
             elif request["request"] == "Send evidence":    
                 signed_attestation = self.validate_evidence(request)
                 encoded_signed_attestation = base64.b64encode(signed_attestation).decode('utf-8')
-                response = json.dumps({"attestation": encoded_signed_attestation}).encode('utf-8')
+                expiration = self.generate_expiration()
+                encoded_expiration = base64.b64encode(expiration).decode('utf-8')
+                response = json.dumps({"attestation": encoded_signed_attestation, "expiration": encoded_expiration}).encode('utf-8')
                 pretty_print("VERIFIER", "Evidence valid, sending attestation", response)
                 self.secure_connection.send(response)
 
+    def generate_expiration(self):
+        try:
+            return self.signing_key.sign(str(time.time()).encode('utf-8'))
+        except Exception as e:
+            pretty_print("VERIFIER", "Failed to generate expiration:", e)
+            return None
     
     def generate_nonce(self):
         nonce = nacl.utils.random(nacl.secret.SecretBox.NONCE_SIZE)
-        return base64.b64encode(nonce).decode('utf-8')
+        nonce = base64.b64encode(nonce)
+        self.pending_verifications[nonce] = time.time()
+        print("----------------------------------------")
+        print("Nonce: ", nonce)
+        return nonce.decode('utf-8')
     
     def validate_evidence(self, request):
         try:
             signed_evidence = base64.b64decode(request["evidence"])
-
             signed_hash = self.tee_public_key.verify(signed_evidence)
             nonce_json = json.loads(request["nonce"])
             nonce = nonce_json["nonce"].encode('utf-8')
+            if nonce not in self.pending_verifications :
+                pretty_print("VERIFIER", "Nonce not found in pending verifications")
+                return None
+            if time.time() - self.pending_verifications[nonce] > 300:
+                pretty_print("VERIFIER", "Nonce expired")
+                return None
             recomputed_hash = self.hasher(
                 self.tee_source_code + self.tee_secret + nonce,
                 encoder=nacl.encoding.HexEncoder,
             )
             if recomputed_hash == signed_hash:
+                
                 return self.signing_key.sign(request["evidence"].encode('utf-8'))
             else:
                 return None
@@ -90,7 +108,13 @@ class Verifier:
 
     def verify_attestation_for_token(self, attestation):
         json_attestation = json.loads(attestation)
+        
         try:
+            signed_expiration = base64.b64decode(json_attestation["expiration"])
+            expiration = self.public_key.verify(signed_expiration)
+            if time.time() - float(expiration) > 300:
+                pretty_print("VERIFIER", "Attestation expired")
+                return False
             signed_attestation = base64.b64decode(json_attestation["attestation"])
             self.public_key.verify(signed_attestation)
             return True

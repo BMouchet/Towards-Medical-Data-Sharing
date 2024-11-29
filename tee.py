@@ -37,13 +37,20 @@ class TEE:
         signed_token = self.private_key.sign(self.token.encode())
         # signed_request = self.sign_request(request)
         db_response = self.query_db(db_host, db_port, request, signed_token)
+        response = self.prepare_response(request, db_response, attestation)
+        self.client_secure_connection.send(response.encode())
+
+    def prepare_response(self, request, db_response, attestation):
         pretty_print("TEE", "Received response from database, signing it", db_response)
         signed_result = self.sign_result(db_response)
         signed_result = base64.b64encode(signed_result).decode('utf-8')
-        response = {"response": signed_result, "request": request, "attestation": attestation}
+        attestation = json.loads(attestation)
+        expiration = attestation["expiration"]
+        attestation = attestation["attestation"]
+        response = {"response": signed_result, "request": request, "attestation": attestation, "expiration": expiration}
         response = json.dumps(response)
         pretty_print("TEE", "Sending response", response)
-        self.client_secure_connection.send(response.encode())
+        return response
 
     def request_nonce(self, verifier_host, verifier_port, request_hash):
         self.verifier_secure_connection.connect(verifier_host, verifier_port)
@@ -90,7 +97,7 @@ class TEE:
     def query_db(self, db_host, db_port, request, token):
         self.db_secure_connection.connect(db_host, db_port)
         token = base64.b64encode(token).decode('utf-8')
-        data = json.dumps({"request": request, "token": token }).encode()
+        data = json.dumps({"request": request, "token": token }).encode('utf-8')
         pretty_print("TEE", "Received token and signed it, querying database", data)
         self.db_secure_connection.send(data)
 
@@ -99,7 +106,7 @@ class TEE:
         return db_response
     
     def sign_result(self, db_response):
-        signed_data = self.private_key.sign(db_response.encode())
+        signed_data = self.private_key.sign(db_response.encode('utf-8'))
         return signed_data
     
     def close_connections(self):
