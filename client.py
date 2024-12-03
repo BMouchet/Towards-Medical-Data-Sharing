@@ -12,12 +12,13 @@ class Client:
         self.tee_public_key = tee_public_key
         self.verifier_public_key = verifier_public_key
 
-    def send_request(self, tee_host, tee_port, username, password, avs_number):
+    def send_request(self, tee_host, tee_port, username, password, query, params):
         self.secure_connection.connect(tee_host, tee_port)
         request_data = {
             "username": username,
             "password": password,
-            "avs_number": avs_number
+            "query": query,
+            "query_params": params
         }
         request_json = json.dumps(request_data)
         pretty_print("CLIENT", "Sending request", request_json)
@@ -26,6 +27,9 @@ class Client:
         pretty_print("CLIENT", "Received response", response)
         binary_data = response.encode('utf-8')
         response_json = json.loads(binary_data)
+        if 'error' in response_json:
+            pretty_print("CLIENT", f"Error in response: {response_json['error']}")
+            return
         pretty_print("CLIENT", "Verifying response")
         query_result = self.verify_result(response_json)
         pretty_print("CLIENT", "Verifying attestation")
@@ -61,5 +65,9 @@ class Client:
             return False
         
     def close_connection(self):
-        self.secure_connection.close()
+        try:
+            self.secure_connection.close()
+        except Exception as e:
+            pretty_print("CLIENT", f"Error closing connection: {e}")
+
 

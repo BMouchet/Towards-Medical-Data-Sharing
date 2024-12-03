@@ -48,14 +48,14 @@ class Verifier:
                 response = json.dumps(response).encode('utf-8')
                 pretty_print("VERIFIER", "Sending nonce", response)
                 self.secure_connection.send(response)
-            elif request["request"] == "Request token":
-                pretty_print("VERIFIER", "Received token request")
-                if self.verify_attestation_for_token(request["attestation"]):
-                    token = self.generate_token()
-                    response = json.dumps({"token": base64.b64encode(token).decode('utf-8')}).encode('utf-8')
-                    pretty_print("VERIFIER", "Attestation valid, sending token", response)
-                    self.secure_connection.send(response)
-                self.is_listening = False
+            # elif request["request"] == "Request token":
+            #     pretty_print("VERIFIER", "Received token request")
+            #     if self.verify_attestation_for_token(request["attestation"]):
+            #         token = self.generate_token()
+            #         response = json.dumps({"token": base64.b64encode(token).decode('utf-8')}).encode('utf-8')
+            #         pretty_print("VERIFIER", "Attestation valid, sending token", response)
+            #         self.secure_connection.send(response)
+            #     self.is_listening = False
             elif request["request"] == "Send evidence":    
                 signed_attestation = self.validate_evidence(request)
                 encoded_signed_attestation = base64.b64encode(signed_attestation).decode('utf-8')
@@ -64,6 +64,7 @@ class Verifier:
                 response = json.dumps({"attestation": encoded_signed_attestation, "expiration": encoded_expiration}).encode('utf-8')
                 pretty_print("VERIFIER", "Evidence valid, sending attestation", response)
                 self.secure_connection.send(response)
+                self.is_listening = False
 
     def generate_expiration(self):
         try:
@@ -76,8 +77,6 @@ class Verifier:
         nonce = nacl.utils.random(nacl.secret.SecretBox.NONCE_SIZE)
         nonce = base64.b64encode(nonce)
         self.pending_verifications[nonce] = time.time()
-        print("----------------------------------------")
-        print("Nonce: ", nonce)
         return nonce.decode('utf-8')
     
     def validate_evidence(self, request):
@@ -129,4 +128,7 @@ class Verifier:
     
     def close_connection(self):
         self.is_listening = False
-        self.secure_connection.close()
+        try:
+            self.secure_connection.close()
+        except Exception as e:
+            pretty_print("VERIFIER", f"Error closing connection: {e}")

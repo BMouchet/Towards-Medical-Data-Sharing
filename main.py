@@ -12,7 +12,7 @@ db_port = 12347
 tee_port = 12348
 
 verifier = Verifier(ca_cert_file="certs/ca-cert.pem", self_cert_file="certs/server-cert.pem", key_file="certs/server-key.pem", tee_secret="Secret")
-database = Database(ca_cert_file="certs/ca-cert.pem", self_cert_file="certs/server-cert.pem", key_file="certs/server-key.pem", )
+database = Database(ca_cert_file="certs/ca-cert.pem", self_cert_file="certs/server-cert.pem", key_file="certs/server-key.pem", verifier_public_key=verifier.get_public_key())
 tee = TEE(ca_cert_file="certs/ca-cert.pem", self_cert_file="certs/server-cert.pem", key_file="certs/server-key.pem", verifier_public_key=verifier.get_public_key())
 client = Client(ca_cert_file="certs/ca-cert.pem", self_cert_file="certs/client-cert.pem", key_file="certs/client-key.pem", tee_public_key=tee.get_public_key(), verifier_public_key=verifier.get_public_key())
 
@@ -21,7 +21,7 @@ def handle_tee():
     tee.close_connections()
 
 def handle_client():
-    client.send_request(host, client_port, "Ben", "Password", "123456789")
+    client.send_request(host, client_port, "756.1111.1111.12", "Password", "get_height", {"avs_param": "756.1111.1111.11"})   
     client.close_connection()
 
 def handle_verifier():
@@ -48,8 +48,4 @@ client_thread.join()
 verifier_thread.join()
 db_thread.join()
 
-verifier.close_connection()
-database.close_connection()
-tee.close_connections()
-database.close_connection()
 time.sleep(1)
