@@ -2,133 +2,112 @@ import base64
 import json
 import time
 from TLS_helper import TLSHelper
-from nacl.signing import SigningKey 
-import nacl.utils, nacl.secret
 import inspect
-import nacl.hash
-from tee import TEE
+from tee_db_proxy import TEE_DB_Proxy
+from nacl.signing import SigningKey
+import nacl.utils, nacl.secret
+from tools import generate_request, prepare_bytes_for_json, from_json_to_bytes
 from display_helper import pretty_print
+from nacl.hash import sha256
+import threading
 
 class Verifier:
-    def __init__(self, ca_cert_file, self_cert_file, key_file, tee_secret):
-        self.secure_connection = TLSHelper(ca_cert_file, self_cert_file, key_file, is_server=True)
-        self.tee_secret = tee_secret.encode('utf-8')
-        self.tee_source_code = inspect.getsource(TEE).encode('utf-8')
+    def __init__(self, ca_cert_file, self_cert_file, key_file):
+        self.connection_with_client = TLSHelper(ca_cert_file, self_cert_file, key_file, is_server=True)
+        self.connection_with_tee = TLSHelper(ca_cert_file, self_cert_file, key_file, is_server=True)
+        self.tee_source_code = inspect.getsource(TEE_DB_Proxy)
         self.tee_public_key = None
-        self.signing_key = SigningKey.generate()
-        self.public_key = self.signing_key.verify_key
         self.pending_verifications = {}
-        self.hasher = nacl.hash.sha256
-        self.is_listening = False
+        self.exipiration = 300
+        self.private_signing_key = SigningKey.generate()
+        self.public_signing_key = self.private_signing_key.verify_key
+        pretty_print("VERIFIER", "Initialized")
+        self.listening = False
         
-
-
+    def set_tee_public_key(self, tee_public_key):
+        self.tee_public_key = tee_public_key
+        
     def get_public_key(self):
-        return self.public_key
-
-    def listen(self, host, port):
-        self.is_listening = True
-        self.secure_connection.connect(host, port)
-        while self.is_listening:
-            received_data = self.secure_connection.receive()
+        return self.public_signing_key
+    
+    def handle_connection(self, connection):
+        while self.listening:
             try:
-                # Decode Base64-encoded evidence
-                # binary_data = base64.b64decode(received_data.encode('utf-8'))
-                binary_data = received_data.encode('utf-8')
-                request = json.loads(binary_data)
-            except json.JSONDecodeError as e:
-                raise e
-
-            if request["request"] == "Request nonce":
-                pretty_print("VERIFIER", "Received nonce request")
-                nonce = self.generate_nonce()
-                timestamp = time.time()
-                response = {"nonce": nonce, "timestamp": timestamp}
-                self.pending_verifications[nonce] = timestamp
-                response = json.dumps(response).encode('utf-8')
-                pretty_print("VERIFIER", "Sending nonce", response)
-                self.secure_connection.send(response)
-            # elif request["request"] == "Request token":
-            #     pretty_print("VERIFIER", "Received token request")
-            #     if self.verify_attestation_for_token(request["attestation"]):
-            #         token = self.generate_token()
-            #         response = json.dumps({"token": base64.b64encode(token).decode('utf-8')}).encode('utf-8')
-            #         pretty_print("VERIFIER", "Attestation valid, sending token", response)
-            #         self.secure_connection.send(response)
-            #     self.is_listening = False
-            elif request["request"] == "Send evidence":    
-                signed_attestation = self.validate_evidence(request)
-                encoded_signed_attestation = base64.b64encode(signed_attestation).decode('utf-8')
-                expiration = self.generate_expiration()
-                encoded_expiration = base64.b64encode(expiration).decode('utf-8')
-                response = json.dumps({"attestation": encoded_signed_attestation, "expiration": encoded_expiration}).encode('utf-8')
-                pretty_print("VERIFIER", "Evidence valid, sending attestation", response)
-                self.secure_connection.send(response)
-                self.is_listening = False
-
-    def generate_expiration(self):
-        try:
-            return self.signing_key.sign(str(time.time()).encode('utf-8'))
-        except Exception as e:
-            pretty_print("VERIFIER", "Failed to generate expiration:", e)
-            return None
+                request = connection.receive()
+                pretty_print("VERIFIER", f"Received request at {connection}", request)
+                self.dispatch_request(request)
+            except:
+                pretty_print("VERIFIER", "Connection error")
+                break
     
-    def generate_nonce(self):
-        nonce = nacl.utils.random(nacl.secret.SecretBox.NONCE_SIZE)
-        nonce = base64.b64encode(nonce)
-        self.pending_verifications[nonce] = time.time()
-        return nonce.decode('utf-8')
-    
-    def validate_evidence(self, request):
-        try:
-            signed_evidence = base64.b64decode(request["evidence"])
-            signed_hash = self.tee_public_key.verify(signed_evidence)
-            nonce_json = json.loads(request["nonce"])
-            nonce = nonce_json["nonce"].encode('utf-8')
-            if nonce not in self.pending_verifications :
-                pretty_print("VERIFIER", "Nonce not found in pending verifications")
-                return None
-            if time.time() - self.pending_verifications[nonce] > 300:
-                pretty_print("VERIFIER", "Nonce expired")
-                return None
-            recomputed_hash = self.hasher(
-                self.tee_source_code + self.tee_secret + nonce,
-                encoder=nacl.encoding.HexEncoder,
-            )
-            if recomputed_hash == signed_hash:
-                
-                return self.signing_key.sign(request["evidence"].encode('utf-8'))
-            else:
-                return None
-
-        except Exception as e:
-            pretty_print("VERIFIER", "Evidence validation failed:", e)
-            return None
-
-    def verify_attestation_for_token(self, attestation):
-        json_attestation = json.loads(attestation)
+    def start(self, verifier_host, verifier_port, other_verifier_port):
+        self.connection_with_client.connect(verifier_host, verifier_port)
+        if other_verifier_port:
+            self.connection_with_tee.connect(verifier_host, other_verifier_port)
+            tee_thread = threading.Thread(target=self.handle_connection, args=(self.connection_with_tee,))
+            tee_thread.start()
+        self.listening = True
         
-        try:
-            signed_expiration = base64.b64decode(json_attestation["expiration"])
-            expiration = self.public_key.verify(signed_expiration)
-            if time.time() - float(expiration) > 300:
-                pretty_print("VERIFIER", "Attestation expired")
-                return False
-            signed_attestation = base64.b64decode(json_attestation["attestation"])
-            self.public_key.verify(signed_attestation)
-            return True
-        except Exception as e:
-            pretty_print("VERIFIER", "Attestation verification failed:", e)
-            return False   
-               
+        client_thread = threading.Thread(target=self.handle_connection, args=(self.connection_with_client,))
+        
+        client_thread.start()
+        
+        
+    def dispatch_request(self, request):
+        request_json = json.loads(request)
+        pretty_print("VERIFIER", "Received request", request_json)
+        try: 
+            if request_json['verb'] == 'GET' and request_json['route'] == 'nonce':
+                nonce = prepare_bytes_for_json(self.return_nonce())
+                response = generate_request(["nonce"], [nonce])
+                pretty_print("VERIFIER", "Sending nonce", response)
+                self.connection_with_client.send(response)
+            elif request_json['verb'] == 'GET' and request_json['route'] == 'attestation':
+                pretty_print("VERIFIER", "Received attestation request")
+                attestation = self.generate_attestation(request_json['evidence'], request_json['nonce'])
+                self.send_attestation(attestation)
+        except:
+            if 'error' in request_json or 'close' in request_json:
+                pretty_print("VERIFIER", "Received close request")
+                self.listening = False
+                self.connection_with_client.close()
+
+
+    def return_nonce(self):
+        pretty_print("VERIFIER", "Received nonce request")
+        nonce = nacl.utils.random(nacl.secret.SecretBox.NONCE_SIZE)
+        self.pending_verifications[prepare_bytes_for_json(nonce)] = time.time()
+        return nonce
     
-    def generate_token(self):
-        return nacl.utils.random(nacl.secret.SecretBox.KEY_SIZE)
-     
+    def compute_known_evidence(self, nonce):
+        evidence_hash = sha256(self.tee_source_code.encode('utf-8') + from_json_to_bytes(nonce))
+        return evidence_hash
     
-    def close_connection(self):
-        self.is_listening = False
-        try:
-            self.secure_connection.close()
-        except Exception as e:
-            pretty_print("VERIFIER", f"Error closing connection: {e}")
+    def verify_evidence(self, evidence):
+        bytes_evidence = base64.b64decode(evidence)
+        return self.tee_public_key.verify(bytes_evidence)
+    
+    def generate_attestation(self, evidence, nonce):
+        pretty_print("VERIFIER", f"Pending ? {self.pending_verifications[nonce]}")
+        if(nonce in self.pending_verifications):
+            pretty_print("VERIFIER", "Nonce found")
+            if(time.time() - self.pending_verifications[nonce] < self.exipiration):
+                pretty_print("VERIFIER", "Nonce not expired")
+                pretty_print("VERIFIER", f"Verifying evidence {evidence}")
+                received_evidence = self.verify_evidence(evidence)
+                pretty_print("VERIFIER", "Received evidence verified")
+                known_evidence = self.compute_known_evidence(nonce)
+                if(received_evidence == known_evidence):
+                    pretty_print("VERIFIER", "Evidence match")
+                    expiration = time.time() + self.exipiration
+                    evidence = {"expiration": expiration, "evidence": evidence}
+                    evidence_json = json.dumps(evidence, separators=(',', ':')).encode('utf-8') 
+                    attestation = self.private_signing_key.sign(evidence_json)
+                    return attestation  
+    
+    def send_attestation(self, attestation):
+        response = generate_request(["attestation"], [prepare_bytes_for_json(attestation)])
+        pretty_print("VERIFIER", "Sending attestation", response)
+        self.connection_with_client.send(response)
+    
+    
