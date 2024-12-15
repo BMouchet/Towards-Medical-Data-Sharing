@@ -1,10 +1,16 @@
+import copy
+import datetime
 import inspect
 import json
+from bson import ObjectId
 from TLS_helper import TLSHelper
 from tools import generate_request, prepare_bytes_for_json, from_json_to_bytes
 from display_helper import pretty_print
 from nacl.signing import SigningKey
 from nacl.hash import sha256
+from pymongo import MongoClient
+import os
+import dotenv
 
 class TEE_DB_Proxy:
     def __init__(self, ca_cert_file, self_cert_file, key_file):
@@ -14,7 +20,60 @@ class TEE_DB_Proxy:
         self.private_signing_key = SigningKey.generate()
         self.public_signing_key = self.private_signing_key.verify_key
         pretty_print("TEE DB PROXY", "Initialized")
-        self.methods = {}
+        self.methods = {
+            
+        }
+        
+        dotenv.load_dotenv()
+        username = os.getenv('TEE_DB_USERNAME')
+        password = os.getenv('TEE_DB_PASSWORD')
+        self.uri = f'mongodb://{username}:{password}@localhost:27017/'
+        self.pipelines = {
+            "get_height": [
+                {"$match": {"patientId": "$patient_id"}}, 
+                {
+                    "$project": {
+                        "height": {
+                            "$cond": {
+                                "if": {
+                                    "$or": [
+                                        {"$eq": ["$patientId", "$user_id"]},
+                                        {
+                                            "$gt": [
+                                                {
+                                                    "$size": {
+                                                        "$filter": {
+                                                            "input": "$data.metrics.accessControl",
+                                                            "as": "access",
+                                                            "cond": {
+                                                                "$and": [
+                                                                    {"$eq": ["$$access.userId", "$user_id"]},
+                                                                    {"$in": ["read", "$$access.permissions"]},
+                                                                    {
+                                                                        "$or": [
+                                                                            {"$eq": ["$$access.expiration", None]},
+                                                                            {"$gt": ["$$access.expiration", "$$NOW"]}
+                                                                        ]
+                                                                    },
+                                                                ]
+                                                            },
+                                                        }
+                                                    }
+                                                },
+                                                0,
+                                            ]
+                                        },
+                                    ]
+                                },
+                                "then": "$data.metrics.height",
+                                "else": None,
+                            }
+                        },
+                        "_id": 0,
+                    }
+                },
+            ],
+        }
         
     def get_public_key(self):
         return self.public_signing_key
@@ -39,8 +98,8 @@ class TEE_DB_Proxy:
                 evidence = prepare_bytes_for_json(self.generate_evidence(request_json['nonce']))
                 self.send_evidence(evidence, nonce)
             elif request_json['verb'] == 'GET' and request_json['route'] in self.methods or True:
-                if request_json['route']:
-                    self.start_attestation_protocol()
+                # if request_json['route']:
+                #     self.start_attestation_protocol()
                 response = self.execute_query(request_json)
                 self.send_response(response)
         except:
@@ -61,9 +120,82 @@ class TEE_DB_Proxy:
         
     def execute_query(self, query):
         pretty_print("TEE DB PROXY", "Executing query", query)
-        response = generate_request(["response"], ["response"])
+        client = MongoClient(self.uri)
+        self.db = client['medical-data']
+        print(query['params'], query['route'], query['username'], query['password'])    
+        patient_id = self.db.users.find_one({"username": query['params']['patient']})['_id']
+        print(patient_id)
+        user = self.authenticate_user(query['username'], query['password'])
+        print(patient_id, user)
+        pipeline = self.get_pipeline(query['route'], {"patient_id": patient_id, "user_id": user})
+        print(pipeline)
+        result = list(self.db.patients.aggregate(pipeline))
+        print(result)
+        response = generate_request(["response"], [result])
         return response
-    
+
+    def authenticate_user(self, username, password):
+        print(f"Authenticating {username} with password {password}")
+        user = self.db.users.find_one({"username": username, "password": password})
+        if user:
+            print(f"Authenticated {username}")
+            return user["_id"]
+        else:
+            raise ValueError("Invalid username or password")
+        
+    def get_pipeline(self, template_name, params):
+        pipeline_template = copy.deepcopy(self.pipelines[template_name])
+        
+        for param_name, param_value in params.items():
+            params[param_name] = self.validate_param(param_name, param_value)
+
+        def replace_placeholders(obj):
+            if isinstance(obj, dict):
+                # Recursively process dictionaries
+                return {key: replace_placeholders(value) for key, value in obj.items()}
+            elif isinstance(obj, list):
+                # Recursively process lists
+                return [replace_placeholders(item) for item in obj]
+            elif isinstance(obj, str) and obj.startswith("$"):
+                # Replace placeholders that match keys in params
+                placeholder = obj[1:]  # Remove leading $
+                validated_value = params.get(placeholder, obj)
+                return validated_value  # Replace if key exists in params
+            return obj
+
+        return replace_placeholders(pipeline_template)
+
+    def validate_param(self, param_name, param_value):
+        print(f"Validating {param_name}: {param_value}")
+        if param_name in ["patient_id", "user_id"]:
+            if not isinstance(param_value, ObjectId):
+                raise ValueError(f"Invalid value for {param_name}: {param_value}")
+            return param_value
+        elif param_name == "access_type":
+            if param_value not in ["read", "write"]:
+                raise ValueError(f"Invalid access type: {param_value}")
+            return param_value
+        elif param_name == "expiration":
+            if isinstance(param_value, str):
+                try:
+                    # Assuming the datetime format is "YYYY-MM-DD HH:MM:SS"
+                    expiration_datetime = datetime.datetime.strptime(param_value, "%Y-%m-%d %H:%M:%S")
+                except ValueError:
+                    raise ValueError(f"Invalid expiration time format: {param_value}. Expected format is YYYY-MM-DD HH:MM:SS")
+            elif isinstance(param_value, datetime):
+                expiration_datetime = param_value
+            else:
+                raise ValueError(f"Invalid expiration time: {param_value}. It should be a datetime or a valid datetime string.")
+            
+            # Optionally, compare expiration to current time to check if it's in the future
+            if expiration_datetime <= datetime.now():
+                raise ValueError(f"Expiration time must be in the future: {param_value}")
+            
+            # Return the expiration datetime object
+            return expiration_datetime
+        else:
+            raise ValueError(f"Invalid parameter name: {param_name}")
+        
     def send_response(self, response):
         pretty_print("TEE DB PROXY", "Sending response", response)
         self.connection_with_client.send(response)
@@ -82,10 +214,13 @@ class TEE_DB_Proxy:
         request = generate_request(["verb", "route"], ["GET", "nonce"])
         pretty_print("TEE DB PROXY", "Sending request", request)
         self.connection_with_verifier.send(request)
+        pretty_print("TEE DB PROXY", "Sent request")
         nonce = self.connection_with_verifier.receive()
+        pretty_print("TEE DB PROXY", "Received nonce", nonce)
         return nonce
     
     def request_evidence(self, nonce):
+        pretty_print("TEE DB PROXY", "Requesting evidence")
         nonce = json.loads(nonce)['nonce']
         request = generate_request(["verb", "route", "nonce"], ["GET", "evidence", nonce])
         self.connection_with_client.send(request)

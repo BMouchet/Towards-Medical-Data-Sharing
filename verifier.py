@@ -13,8 +13,9 @@ import threading
 
 class Verifier:
     def __init__(self, ca_cert_file, self_cert_file, key_file):
-        self.connection_with_client = TLSHelper(ca_cert_file, self_cert_file, key_file, is_server=True)
-        self.connection_with_tee = TLSHelper(ca_cert_file, self_cert_file, key_file, is_server=True)
+        self.connections = {}
+        self.connections["Client"] = TLSHelper(ca_cert_file, self_cert_file, key_file, is_server=True)
+        self.connections["TEE"] = TLSHelper(ca_cert_file, self_cert_file, key_file, is_server=True)
         self.tee_source_code = inspect.getsource(TEE_DB_Proxy)
         self.tee_public_key = None
         self.pending_verifications = {}
@@ -33,44 +34,42 @@ class Verifier:
     def handle_connection(self, connection):
         while self.listening:
             try:
-                request = connection.receive()
-                pretty_print("VERIFIER", f"Received request at {connection}", request)
-                self.dispatch_request(request)
+                request = self.connections[connection].receive()
+                self.dispatch_request(request, connection)
             except:
                 pretty_print("VERIFIER", "Connection error")
                 break
     
     def start(self, verifier_host, verifier_port, other_verifier_port):
-        self.connection_with_client.connect(verifier_host, verifier_port)
-        if other_verifier_port:
-            self.connection_with_tee.connect(verifier_host, other_verifier_port)
-            tee_thread = threading.Thread(target=self.handle_connection, args=(self.connection_with_tee,))
-            tee_thread.start()
         self.listening = True
+        self.connections["Client"].connect(verifier_host, verifier_port)
+        if other_verifier_port:
+            self.connections["TEE"].connect(verifier_host, other_verifier_port)
+            tee_thread = threading.Thread(target=self.handle_connection, args=("TEE",))
+            tee_thread.start()
+
         
-        client_thread = threading.Thread(target=self.handle_connection, args=(self.connection_with_client,))
+        client_thread = threading.Thread(target=self.handle_connection, args=("Client",))
         
         client_thread.start()
         
         
-    def dispatch_request(self, request):
+    def dispatch_request(self, request, connection):
         request_json = json.loads(request)
         pretty_print("VERIFIER", "Received request", request_json)
         try: 
             if request_json['verb'] == 'GET' and request_json['route'] == 'nonce':
-                nonce = prepare_bytes_for_json(self.return_nonce())
-                response = generate_request(["nonce"], [nonce])
-                pretty_print("VERIFIER", "Sending nonce", response)
-                self.connection_with_client.send(response)
+                nonce = self.return_nonce()
+                self.send_nonce(nonce, connection)
             elif request_json['verb'] == 'GET' and request_json['route'] == 'attestation':
                 pretty_print("VERIFIER", "Received attestation request")
                 attestation = self.generate_attestation(request_json['evidence'], request_json['nonce'])
-                self.send_attestation(attestation)
+                self.send_attestation(attestation, connection)
         except:
             if 'error' in request_json or 'close' in request_json:
                 pretty_print("VERIFIER", "Received close request")
                 self.listening = False
-                self.connection_with_client.close()
+                self.connections[connection].close()
 
 
     def return_nonce(self):
@@ -105,9 +104,12 @@ class Verifier:
                     attestation = self.private_signing_key.sign(evidence_json)
                     return attestation  
     
-    def send_attestation(self, attestation):
+    def send_attestation(self, attestation, connection):
         response = generate_request(["attestation"], [prepare_bytes_for_json(attestation)])
         pretty_print("VERIFIER", "Sending attestation", response)
-        self.connection_with_client.send(response)
+        self.connections[connection].send(response)
     
-    
+    def send_nonce(self, nonce, connection):
+        response = generate_request(["nonce"], [prepare_bytes_for_json(nonce)])
+        pretty_print("VERIFIER", "Sending nonce", response)
+        self.connections[connection].send(response)
