@@ -21,7 +21,8 @@ class TEE_DB_Proxy:
         self.public_signing_key = self.private_signing_key.verify_key
         pretty_print("TEE DB PROXY", "Initialized")
         self.methods = {
-            
+            "get_height": True,
+            "is_heavier_than": False,
         }
         
         dotenv.load_dotenv()
@@ -73,6 +74,55 @@ class TEE_DB_Proxy:
                     }
                 },
             ],
+            "is_heavier_than": [
+                {"$match": {"patientId": "$patient_id"}}, 
+                {
+                    "$project": {
+                        "is_heavier_than": {
+                            "$cond": {
+                                "if": {
+                                    "$and": [
+                                        {
+                                            "$or": [
+                                                {"$eq": ["$patientId", "$user_id"]},
+                                                {
+                                                    "$gt": [
+                                                        {
+                                                            "$size": {
+                                                                "$filter": {
+                                                                    "input": "$data.metrics.accessControl",
+                                                                    "as": "access",
+                                                                    "cond": {
+                                                                        "$and": [
+                                                                            {"$eq": ["$$access.userId", "$user_id"]},
+                                                                            {"$in": ["read", "$$access.permissions"]},
+                                                                            {
+                                                                                "$or": [
+                                                                                    {"$eq": ["$$access.expiration", None]},
+                                                                                    {"$gt": ["$$access.expiration", "$$NOW"]}
+                                                                                ]
+                                                                            },
+                                                                        ]
+                                                                    },
+                                                                }
+                                                            }
+                                                        },
+                                                        0,
+                                                    ]
+                                                },
+                                            ]
+                                        },
+                                        {"$gt": ["$data.metrics.weight", 100]},
+                                    ]
+                                },
+                                "then": True,
+                                "else": False,
+                            }
+                        },
+                        "_id": 0,
+                    }
+                },
+            ],
         }
         
     def get_public_key(self):
@@ -97,20 +147,21 @@ class TEE_DB_Proxy:
                 nonce = request_json['nonce']
                 evidence = prepare_bytes_for_json(self.generate_evidence(request_json['nonce']))
                 self.send_evidence(evidence, nonce)
-            elif request_json['verb'] == 'GET' and request_json['route'] in self.methods or True:
-                # if request_json['route']:
-                #     self.start_attestation_protocol()
+            elif request_json['verb'] == 'GET' and request_json['route'] in self.methods:
+                if self.methods[request_json['route']]:
+                    self.start_attestation_protocol()
                 response = self.execute_query(request_json)
                 self.send_response(response)
         except:
             if 'error' in request_json or 'close' in request_json:
                 pretty_print("TEE DB PROXY", "Received close request")
                 self.listening = False
-                self.connection_with_client.close()
+                self.stop()
             
     def generate_evidence(self, nonce):
         source_code = inspect.getsource(TEE_DB_Proxy)
         evidence_hash = sha256(source_code.encode('utf-8') + from_json_to_bytes(nonce))  
+        pretty_print("TEE DB PROXY", f"Generated evidence {evidence_hash}")
         evidence = self.private_signing_key.sign(evidence_hash)
         return evidence      
     
@@ -131,8 +182,17 @@ class TEE_DB_Proxy:
         print(pipeline)
         result = list(self.db.patients.aggregate(pipeline))
         print(result)
-        response = generate_request(["response"], [result])
+        signed_result = self.sign_response(result)
+        pretty_print("TEE DB PROXY", f"Query result {signed_result}")   
+        response = generate_request(["response"], [prepare_bytes_for_json(signed_result)])
         return response
+
+    def sign_response(self, response):
+        pretty_print("TEE DB PROXY", "Signing response", response)
+        response = json.dumps(response)
+        response = response.encode('utf-8')
+        signature = self.private_signing_key.sign(response)
+        return signature
 
     def authenticate_user(self, username, password):
         print(f"Authenticating {username} with password {password}")
@@ -236,3 +296,14 @@ class TEE_DB_Proxy:
         attestation = self.connection_with_verifier.receive()   
         pretty_print("TEE DB Proxy", "Received attestation", attestation)
         return attestation
+    
+    def stop(self):
+        response = generate_request(["close"], ["close"])
+        self.connection_with_client.send(response)
+        try:
+            self.connection_with_client.close() 
+            self.connection_with_verifier.close()
+        except:
+            print("Connections already closed")
+        finally:
+            return

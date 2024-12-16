@@ -79,13 +79,22 @@ class BasicClient:
             return attestation
         
     def send_query(self):
-        request = generate_request(["verb", "route", "username", "password", "params"], ["GET", "get_height", "ben", "password", []])
+        request = generate_request(["verb", "route", "username", "password", "params"], ["GET", "is_heavier_than", "doctor1", "password", {"patient": "patient1"}])
         self.connection_with_db_proxy.send(request)
         response = self.connection_with_db_proxy.receive()
-    
-    def verify_response(self, response):
         return response
     
+    def verify_response(self, response):
+        try:
+            response = json.loads(response)
+            pretty_print("CLIENT", "Verifying response", response)
+            response = response['response']
+            response = base64.b64decode(response)
+            response = self.tee_public_key.verify(response)
+            return response
+        except:
+            return response
+        
     def stop(self):
         response = generate_request(["close"], ["close"])
         self.connection_with_verifier.send(response)

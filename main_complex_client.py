@@ -20,6 +20,7 @@ tee_db_proxy = TEE_DB_Proxy(ca_cert_file, server_cert_file, server_key_file)
 client_tee = ClientTEE(ca_cert_file, server_cert_file, server_key_file, tee_db_proxy.get_public_key(), verifier.get_public_key())
 client = ComplexClient(ca_cert_file)
 verifier.set_tee_public_key(tee_db_proxy.get_public_key())
+verifier.set_client_tee_public_key(client_tee.get_public_key())
 
 def handle_verifier():
     verifier.start(host, verifier_port, other_verifier_port)
@@ -44,7 +45,11 @@ client_tee_thread.start()
 tee_thread.start()
 
 verifier_thread.join()
+print("Verifer thread joined")
 client_thread.join()
+print("Client thread joined")
 client_tee_thread.join()
+print("Client TEE thread joined")
 tee_thread.join()
+print("TEE thread joined")
 
