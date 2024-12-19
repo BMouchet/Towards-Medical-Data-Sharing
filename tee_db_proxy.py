@@ -226,12 +226,18 @@ class TEE_DB_Proxy:
                         pretty_print("TEE DB PROXY", f"Request with attestation {request_json}")
                         response = self.execute_query(request_json)
                         pretty_print("TEE DB PROXY", f"Response {response}")
+                        signed_result = self.sign_response(response)
+                        pretty_print("TEE DB PROXY", f"Query result {signed_result}")
+                        response = generate_request(["response"], [prepare_bytes_for_json(signed_result)])
                         self.send_response(response)
                     else:
                         response = generate_request(["error"], ["Attestation failed"])
                         self.send_response(response)
                         self.stop()
                 else:
+                    signed_result = self.sign_response(response)
+                    pretty_print("TEE DB PROXY", f"Query result {signed_result}")
+                    response = generate_request(["response"], [prepare_bytes_for_json(signed_result)])
                     self.send_response(response)
         except Exception as e:
             pretty_print("TEE DB PROXY", f"Error: {e}")
@@ -264,10 +270,7 @@ class TEE_DB_Proxy:
         if any("attestation required" in item.values() for item in result):
             pretty_print("TEE DB PROXY", "Attestation required")
             return result
-        signed_result = self.sign_response(result)
-        pretty_print("TEE DB PROXY", f"Query result {signed_result}")
-        response = generate_request(["response"], [prepare_bytes_for_json(signed_result)])
-        return response
+        return result
 
     def sign_response(self, response):
         pretty_print("TEE DB PROXY", "Signing response", response)
