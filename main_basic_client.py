@@ -13,7 +13,7 @@ server_key_file = "certs/server-key.pem"
 server_cert_file = "certs/server-cert.pem"
 
 verifier = Verifier(ca_cert_file, server_cert_file, server_key_file)
-tee_db_proxy = TEE_DB_Proxy(ca_cert_file, server_cert_file, server_key_file)
+tee_db_proxy = TEE_DB_Proxy(ca_cert_file, server_cert_file, server_key_file, verifier.get_public_key())
 client = BasicClient(ca_cert_file, tee_db_proxy.get_public_key(), verifier.get_public_key())
 verifier.set_tee_public_key(tee_db_proxy.get_public_key())
 def handle_verifier():

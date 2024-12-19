@@ -1,10 +1,11 @@
+from bson import ObjectId
 from TLS_helper import TLSHelper
 from display_helper import pretty_print
 import json
 import base64
 import time
 from nacl.signing import VerifyKey
-from tools import generate_request
+from tools import generate_request, prepare_bytes_for_json
 
 class BasicClient:
     def __init__(self, ca_cert_file, tee_public_key, verifier_public_key):
@@ -64,10 +65,10 @@ class BasicClient:
     def verify_attestation(self, attestation):
         attestation = json.loads(attestation)
         pretty_print("CLIENT", "Verifying attestation", attestation)
-        attestation_siganture = attestation['attestation']
-        attestation_siganture = base64.b64decode(attestation_siganture)
-        pretty_print("CLIENT", f"{attestation_siganture}")
-        attestation = self.verifier_public_key.verify(attestation_siganture)
+        attestation_signature = attestation['attestation']
+        attestation_signature = base64.b64decode(attestation_signature)
+        pretty_print("CLIENT", f"{attestation_signature}")
+        attestation = self.verifier_public_key.verify(attestation_signature)
         pretty_print("CLIENT", "Attestation verified", attestation)
         attestation_json = json.loads(attestation)
         expiration = attestation_json['expiration']
@@ -79,7 +80,7 @@ class BasicClient:
             return attestation
         
     def send_query(self):
-        request = generate_request(["verb", "route", "username", "password", "params"], ["GET", "is_heavier_than", "doctor1", "password", {"patient": "patient1"}])
+        request = generate_request(["verb", "route", "username", "password", "params"], ["GET", "get_height", "doctor1", "password", {"patient_id": str(ObjectId('111111111111111111111111'))}])
         self.connection_with_db_proxy.send(request)
         response = self.connection_with_db_proxy.receive()
         return response

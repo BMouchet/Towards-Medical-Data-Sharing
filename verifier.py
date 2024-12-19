@@ -19,6 +19,7 @@ class Verifier:
         self.connections["TEE"] = TLSHelper(ca_cert_file, self_cert_file, key_file, is_server=True)
         self.tee_source_code = inspect.getsource(TEE_DB_Proxy)
         self.client_tee_source_code = inspect.getsource(ClientTEE)
+        self.approved_pipelines = ["AAA"]
         self.tee_public_key = None
         self.client_tee_public_key = None
         self.pending_verifications = {}
@@ -70,8 +71,12 @@ class Verifier:
                 self.send_nonce(nonce, connection)
             elif request_json['verb'] == 'GET' and request_json['route'] == 'attestation':
                 pretty_print("VERIFIER", "Received attestation request")
-                attestation = self.generate_attestation(request_json['evidence'], request_json['nonce'], connection)
-                self.send_attestation(attestation, connection)
+                if 'pipeline_evidence' in request_json:
+                    attestation = self.generate_attestation_with_pipeline(request, connection)
+                    self.send_attestation(attestation, connection)
+                else:
+                    attestation = self.generate_attestation(request, connection)
+                    self.send_attestation(attestation, connection)
         except:
             if 'error' in request_json or 'close' in request_json:
                 pretty_print("VERIFIER", "Received close request")
@@ -97,6 +102,15 @@ class Verifier:
             evidence_hash = sha256(self.tee_source_code.encode('utf-8') + from_json_to_bytes(nonce))
         return evidence_hash
     
+    def compute_known_pipeline_evidence(self, pipeline_evidence, nonce):
+        try:
+            pipeline_hash = sha256(self.approved_pipelines[0].encode('utf-8') + from_json_to_bytes(nonce))
+            return pipeline_hash
+        except Exception as e:
+            pretty_print("VERIFIER", f"Error computing pipeline evidence {e}")
+            return None
+        
+    
     def verify_evidence(self, evidence, connection):
         bytes_evidence = base64.b64decode(evidence)
         if connection == "TEE":
@@ -104,7 +118,10 @@ class Verifier:
         else:
             return self.tee_public_key.verify(bytes_evidence)
     
-    def generate_attestation(self, evidence, nonce, connection):
+    def generate_attestation(self, request, connection):
+        request_json = json.loads(request)
+        nonce = request_json['nonce']
+        evidence = request_json['evidence']
         pretty_print("VERIFIER", f"Pending ? {self.pending_verifications[nonce]}")
         if(nonce in self.pending_verifications):
             pretty_print("VERIFIER", "Nonce found")
@@ -121,6 +138,37 @@ class Verifier:
                     evidence_json = json.dumps(evidence, separators=(',', ':')).encode('utf-8') 
                     attestation = self.private_signing_key.sign(evidence_json)
                     return attestation  
+                
+    def generate_attestation_with_pipeline(self, request, connection):
+        request_json = json.loads(request)
+        nonce = request_json['nonce']
+        evidence = request_json['evidence']
+        pipeline_evidence = request_json['pipeline_evidence']
+        pretty_print("VERIFIER", f"Pending ? {self.pending_verifications[nonce]}")
+        if(nonce in self.pending_verifications):
+            pretty_print("VERIFIER", "Nonce found")
+            if(time.time() - self.pending_verifications[nonce] < self.exipiration):
+                pretty_print("VERIFIER", "Nonce not expired")
+                pretty_print("VERIFIER", f"Verifying evidence for pipeline {evidence}")
+                received_evidence = self.verify_evidence(evidence, connection)
+                received_pipeline = self.verify_evidence(pipeline_evidence, connection)
+                pretty_print("VERIFIER", "Received evidence verified")
+                known_evidence = self.compute_known_evidence(nonce, connection)
+                pretty_print("VERIFIER", f"Known evidence {known_evidence}")    
+                known_pipeline_evidence = self.compute_known_pipeline_evidence(pipeline_evidence, nonce)
+                pretty_print("VERIFIER", f"Known pipeline evidence {known_pipeline_evidence}, computed {received_pipeline}")
+                if(received_evidence == known_evidence and received_pipeline == known_pipeline_evidence):
+                    try:
+                        pretty_print("VERIFIER", "Evidence match for pipeline")
+                        expiration = time.time() + self.exipiration
+                        evidence = {"expiration": expiration, "evidence": evidence, "pipeline_evidence": pipeline_evidence}
+                        evidence_json = json.dumps(evidence, separators=(',', ':')).encode('utf-8') 
+                        attestation = self.private_signing_key.sign(evidence_json)
+                        pretty_print("VERIFIER", f"Attestation generated for pipeline {attestation}")
+                        return attestation  
+                    except Exception as e:
+                        pretty_print("VERIFIER", f"Error generating attestation {e}")
+                pretty_print("VERIFIER", "Evidence does not match for pipeline")
     
     def send_attestation(self, attestation, connection):
         response = generate_request(["attestation"], [prepare_bytes_for_json(attestation)])
