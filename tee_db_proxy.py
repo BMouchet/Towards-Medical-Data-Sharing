@@ -17,6 +17,14 @@ import dotenv
 
 class TEE_DB_Proxy:
     def __init__(self, ca_cert_file, self_cert_file, key_file, verifier_public_key):
+        """
+        Initialize the TEE_DB_Proxy.
+
+        :param ca_cert_file: Path to the CA certificate file.
+        :param self_cert_file: Path to the self certificate file.
+        :param key_file: Path to the key file.
+        :param verifier_public_key: Public key of the verifier.
+        """
         self.connection_with_client = TLSHelper(ca_cert_file, self_cert_file, key_file, is_server=True)
         self.connection_with_verifier = TLSHelper(ca_cert_file, self_cert_file, key_file, is_server=False)
         self.listening = False
@@ -25,176 +33,34 @@ class TEE_DB_Proxy:
         self.verifier_public_key = verifier_public_key
         pretty_print("TEE DB PROXY", "Initialized")
         self.methods = {
-            "get_height": True,
-            "is_heavier_than": False,
+            "get_height",
+            "get_bp"
         }
-
         dotenv.load_dotenv()
         username = os.getenv('TEE_DB_USERNAME')
         password = os.getenv('TEE_DB_PASSWORD')
         self.uri = f'mongodb://{username}:{password}@localhost:27017/'
-        self.pipelines = {
-            "get_height": [
-                {
-                    "$match": {
-                        "patientId": "$patient_id"
-                    }
-                },
-                {
-                    "$lookup": {
-                        "from": "accessControls",
-                        "localField": "data.metrics.accessControl",
-                        "foreignField": "_id",
-                        "as": "metricsAccessControl"
-                    }
-                },
-                {
-                    "$addFields": {
-                        "filteredUsers": {
-                            "$filter": {
-                                "input": "$metricsAccessControl.users",
-                                "as": "userAccess",
-                                "cond": {
-                                    "$and": [
-                                        {"$eq": ["$$userAccess.userId", "$user_id"]},
-                                        {"$in": ["enclave", "$$userAccess.permissions"]}
-                                    ]
-                                }
-                            }
-                        }
-                    }
-                },
-                {
-                    "$project": {
-                        "height": {
-                            "$let": {
-                                "vars": {
-                                    "enclaveMatch": {
-                                        "$filter": {
-                                            "input": "$metricsAccessControl",
-                                            "as": "control",
-                                            "cond": {
-                                                "$gt": [
-                                                    {
-                                                        "$size": {
-                                                            "$filter": {
-                                                                "input": "$$control.users",
-                                                                "as": "userAccess",
-                                                                "cond": {
-                                                                    "$and": [
-                                                                        {"$eq": ["$$userAccess.userId", "$user_id"]},
-                                                                        {
-                                                                            "$or": [
-                                                                                {
-                                                                                    "$and": [
-                                                                                        {"$in": ["enclave", "$$userAccess.permissions"]},
-                                                                                        {
-                                                                                            "$or": [
-                                                                                                {"$eq": ["$$userAccess.expiration", None]},
-                                                                                                {"$gt": ["$$userAccess.expiration", "$$NOW"]}
-                                                                                            ]
-                                                                                        }
-                                                                                    ]
-                                                                                }
-                                                                            ]
-                                                                        }
-                                                                    ]
-                                                                }
-                                                            }
-                                                        }
-                                                    },
-                                                    0
-                                                ]
-                                            }
-                                        }
-                                    },
-                                    "accessControlMatch": {
-                                        "$filter": {
-                                            "input": "$metricsAccessControl",
-                                            "as": "control",
-                                            "cond": {
-                                                "$gt": [
-                                                    {
-                                                        "$size": {
-                                                            "$filter": {
-                                                                "input": "$$control.users",
-                                                                "as": "userAccess",
-                                                                "cond": {
-                                                                    "$and": [
-                                                                        {"$eq": ["$$userAccess.userId", "$user_id"]},
-                                                                        {
-                                                                            "$or": [
-                                                                                {
-                                                                                    "$and": [
-                                                                                        {"$in": ["read", "$$userAccess.permissions"]},
-                                                                                        {
-                                                                                            "$or": [
-                                                                                                {"$eq": ["$$userAccess.expiration", None]},
-                                                                                                {"$gt": ["$$userAccess.expiration", "$$NOW"]}
-                                                                                            ]
-                                                                                        }
-                                                                                    ]
-                                                                                },
-                                                                                {
-                                                                                    "$and": [
-                                                                                        {"$in": ["enclave", "$$userAccess.permissions"]},
-                                                                                        {"$eq": ["$attestation", True]},
-                                                                                        {
-                                                                                            "$or": [
-                                                                                                {"$eq": ["$$userAccess.expiration", None]},
-                                                                                                {"$gt": ["$$userAccess.expiration", "$$NOW"]}
-                                                                                            ]
-                                                                                        }
-                                                                                    ]
-                                                                                }
-                                                                            ]
-                                                                        }
-                                                                    ]
-                                                                }
-                                                            }
-                                                        }
-                                                    },
-                                                    0
-                                                ]
-                                            }
-                                        }
-                                    }
-                                },
-                                "in": {
-                                    "$cond": {
-                                        "if": {
-                                            "$or": [
-                                                {"$eq": ["$patientId", "$user_id"]},
-                                                {"$gt": [{"$size": "$$accessControlMatch"}, 0]}
-                                            ]
-                                        },
-                                        "then": "$data.metrics.height",
-                                        "else": {
-                                            "$cond": {
-                                                "if": {
-                                                    "$and": [
-                                                        {"$eq": ["$attestation", False]},
-                                                        {"$gt": [{"$size": "$$enclaveMatch"}, 0]}
-                                                    ]
-                                                },
-                                                "then": "attestation required",
-                                                "else": None
-                                            }
-                                        }
-                                    }
-                                }
-                            }
-                        },
-                        "_id": 0
-                    }
-                }
-            ]
-        }
-
+        self.pipeline = None
+        self.client = MongoClient(self.uri)
+        self.db = self.client['medical-data']
+        
     def get_public_key(self):
+        """
+        Get the public signing key.
+
+        :return: Public signing key.
+        """
         return self.public_signing_key
 
     def start(self, tee_host, tee_port, verifier_host, verifier_port):
+        """
+        Start the TEE DB Proxy.
+
+        :param tee_host: Host for the TEE.
+        :param tee_port: Port for the TEE.
+        :param verifier_host: Host for the verifier.
+        :param verifier_port: Port for the verifier.
+        """
         self.connection_with_client.connect(tee_host, tee_port)
         if verifier_host and verifier_port:
             self.connection_with_verifier.connect(verifier_host, verifier_port)
@@ -206,6 +72,11 @@ class TEE_DB_Proxy:
             self.dispatch_request(request)
 
     def dispatch_request(self, request):
+        """
+        Dispatch the received request.
+
+        :param request: The request received from the client.
+        """
         request_json = json.loads(request)
         pretty_print("TEE DB PROXY", "Received request", request_json)
         try:
@@ -247,6 +118,12 @@ class TEE_DB_Proxy:
                 self.stop()
 
     def generate_evidence(self, nonce):
+        """
+        Generate evidence for the given nonce.
+
+        :param nonce: Nonce to be included in the evidence.
+        :return: Signed evidence.
+        """
         source_code = inspect.getsource(TEE_DB_Proxy)
         evidence_hash = sha256(source_code.encode('utf-8') + from_json_to_bytes(nonce))
         pretty_print("TEE DB PROXY", f"Generated evidence {evidence_hash}")
@@ -254,13 +131,23 @@ class TEE_DB_Proxy:
         return evidence
 
     def send_evidence(self, evidence, nonce):
+        """
+        Send the generated evidence to the client.
+
+        :param evidence: The generated evidence.
+        :param nonce: The nonce used to generate the evidence.
+        """
         response = generate_request(["evidence", "nonce"], [evidence, nonce])
         self.connection_with_client.send(response)
 
     def execute_query(self, query):
+        """
+        Execute the query on the database.
+
+        :param query: The query to be executed.
+        :return: The result of the query.
+        """
         pretty_print("TEE DB PROXY", f"Executing query {query}")
-        client = MongoClient(self.uri)
-        self.db = client['medical-data']
         user = self.authenticate_user(query['username'], query['password'])
         query['params']['user_id'] = user
         pipeline = self.get_pipeline(query['route'], query['params'])
@@ -273,6 +160,12 @@ class TEE_DB_Proxy:
         return result
 
     def sign_response(self, response):
+        """
+        Sign the response.
+
+        :param response: The response to be signed.
+        :return: The signed response.
+        """
         pretty_print("TEE DB PROXY", "Signing response", response)
         response = json.dumps(response)
         response = response.encode('utf-8')
@@ -280,6 +173,14 @@ class TEE_DB_Proxy:
         return signature
 
     def authenticate_user(self, username, password):
+        """
+        Authenticate the user.
+
+        :param username: The username of the user.
+        :param password: The password of the user.
+        :return: The user ID if authentication is successful.
+        :raises ValueError: If the username or password is invalid.
+        """
         user = self.db.users.find_one({"username": username, "password": password})
         if user:
             return user["_id"]
@@ -287,8 +188,14 @@ class TEE_DB_Proxy:
             raise ValueError("Invalid username or password")
 
     def get_pipeline(self, template_name, params):
-        pipeline_template = copy.deepcopy(self.pipelines[template_name])
+        """
+        Get the pipeline for the given template name and parameters.
 
+        :param template_name: The name of the pipeline template.
+        :param params: The parameters for the pipeline.
+        :return: The pipeline with placeholders replaced by parameter values.
+        """
+        pipeline_template = self.db.pipelines.find_one({"name": template_name})["pipeline"]
         for param_name, param_value in params.items():
             params[param_name] = self.validate_param(param_name, param_value)
 
@@ -308,8 +215,15 @@ class TEE_DB_Proxy:
 
         return replace_placeholders(pipeline_template)
 
-
     def validate_param(self, param_name, param_value):
+        """
+        Validate the parameter value.
+
+        :param param_name: The name of the parameter.
+        :param param_value: The value of the parameter.
+        :return: The validated parameter value.
+        :raises ValueError: If the parameter value is invalid.
+        """
         if param_name in ["patient_id", "user_id", "access_control_id", "target_user_id"]:
             if not isinstance(param_value, ObjectId):
                 try:
@@ -353,12 +267,21 @@ class TEE_DB_Proxy:
         else:
             raise ValueError(f"Invalid parameter name: {param_name}")
 
-
     def send_response(self, response):
+        """
+        Send the response to the client.
+
+        :param response: The response to be sent.
+        """
         pretty_print("TEE DB PROXY", "Sending response", response)
         self.connection_with_client.send(response)
 
     def start_attestation_protocol(self):
+        """
+        Start the attestation protocol.
+
+        :return: The attestation result.
+        """
         pretty_print("TEE DB PROXY", "Starting attestation protocol")
         nonce = self.request_nonce()
         pretty_print("TEE DB PROXY", "Received nonce", nonce)
@@ -368,6 +291,11 @@ class TEE_DB_Proxy:
         return attestation
 
     def request_nonce(self):
+        """
+        Request a nonce from the verifier.
+
+        :return: The received nonce.
+        """
         pretty_print("TEE DB PROXY", "Requesting nonce")
         request = generate_request(["verb", "route"], ["GET", "nonce"])
         self.connection_with_verifier.send(request)
@@ -375,6 +303,12 @@ class TEE_DB_Proxy:
         return nonce
 
     def request_evidence(self, nonce):
+        """
+        Request evidence from the client using the given nonce.
+
+        :param nonce: The nonce to be included in the evidence request.
+        :return: The received evidence.
+        """
         nonce = json.loads(nonce)['nonce']
         request = generate_request(["verb", "route", "nonce"], ["GET", "evidence", nonce])
         self.connection_with_client.send(request)
@@ -382,16 +316,26 @@ class TEE_DB_Proxy:
         return evidence
 
     def send_evidence_to_verifier(self, evidence):
+        """
+        Send the evidence to the verifier.
+
+        :param evidence: The evidence to be sent.
+        :return: The attestation result.
+        """
         data = json.loads(evidence)
         evidence = data['evidence']
         nonce = data['nonce']
         pipeline_evidence = data['pipeline']
-        request = generate_request(["verb", "route", "evidence", "pipeline_evidence", "nonce"], ["GET", "attestation", evidence, pipeline_evidence, nonce])
+        pipeline_name = data['pipeline_name']
+        request = generate_request(["verb", "route", "pipeline", "evidence", "pipeline_evidence", "nonce"], ["GET", "attestation", pipeline_name, evidence, pipeline_evidence, nonce])
         self.connection_with_verifier.send(request)
         attestation = self.connection_with_verifier.receive()
         return attestation
 
     def stop(self):
+        """
+        Stop the TEE DB Proxy.
+        """
         response = generate_request(["close"], ["close"])
         self.connection_with_client.send(response)
         try:
@@ -401,6 +345,12 @@ class TEE_DB_Proxy:
             print("Connections already closed")
 
     def verify_attestation(self, attestation):
+        """
+        Verify the attestation.
+
+        :param attestation: The attestation to be verified.
+        :return: The verified attestation if valid, otherwise False.
+        """
         attestation = json.loads(attestation)
         attestation_signature = attestation['attestation']
         attestation_signature = base64.b64decode(attestation_signature)
@@ -413,3 +363,4 @@ class TEE_DB_Proxy:
         else:
             pretty_print("TEE DB PROXY", "Attestation valid")
             return attestation
+

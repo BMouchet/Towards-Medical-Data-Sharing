@@ -1,13 +1,15 @@
-import json
 import base64
+import json
 
-def generate_request(keys, values):
-    request_data = dict(zip(keys, values))
-    request_json = json.dumps(request_data)
-    return request_json
 
-def prepare_bytes_for_json(data):
+def generate_request(keys: list, values: list) -> str:
+    """Generates a JSON request from keys and values."""
+    return json.dumps(dict(zip(keys, values)))
+
+def prepare_bytes_for_json(data: bytes) -> str:
+    """Encodes binary data for JSON transmission."""
     return base64.b64encode(data).decode('utf-8')
 
-def from_json_to_bytes(data):
+def from_json_to_bytes(data: str) -> bytes:
+    """Converts a JSON string to bytes."""
     return data.encode('utf-8')

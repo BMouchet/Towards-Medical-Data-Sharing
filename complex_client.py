@@ -4,15 +4,31 @@ import json
 from bson import ObjectId
 from TLS_helper import TLSHelper
 from display_helper import pretty_print
-from tools import from_json_to_bytes, generate_request, prepare_bytes_for_json
+from tools import generate_request
 
 
 class ComplexClient:
     def __init__(self, ca_cert_file):
+        """
+        Initialize the ComplexClient with a TLS connection.
+
+        Args:
+            ca_cert_file (str): Path to the CA certificate file.
+        """
         self.connection_with_personal_tee = TLSHelper(ca_cert_file, is_server=False)
         pretty_print("CLIENT", "Initialized")
         
     def start(self, personal_tee_host, personal_tee_port):
+        """
+        Start the connection to the personal TEE and send a query.
+
+        Args:
+            personal_tee_host (str): Hostname of the personal TEE.
+            personal_tee_port (int): Port number of the personal TEE.
+
+        Returns:
+            None
+        """
         self.connection_with_personal_tee.connect(personal_tee_host, personal_tee_port)
         response = self.send_query()
         pretty_print("CLIENT", f"Request was successful {response}")
@@ -23,8 +39,15 @@ class ComplexClient:
         return
     
     def send_query(self):
-        # request = generate_request(["verb", "route", "username", "password", "params"], ["GET", "is_heavier_than", "doctor1", "password", {"patient": "patient1"}])
+        """
+        Send a query to the personal TEE.
+
+        Returns:
+            str: The response from the personal TEE.
+        """
+        # request = generate_request(["verb", "route", "username", "password", "params"], ["GET", "is_bp_above_mean", "external1", "password", {"patient_id": str(ObjectId('111111111111111111111111'))}])
         request = generate_request(["verb", "route", "username", "password", "params"], ["GET", "get_height", "external1", "password", {"patient_id": str(ObjectId('111111111111111111111111'))}])
+
         pretty_print("CLIENT", "Sending query", request)
         self.connection_with_personal_tee.send(request)
         response = self.connection_with_personal_tee.receive()
@@ -32,6 +55,12 @@ class ComplexClient:
         return response
     
     def stop(self):
+        """
+        Stop the connection to the personal TEE.
+
+        Returns:
+            None
+        """
         response = generate_request(["close"], ["close"])
         self.connection_with_personal_tee.send(response)
         try:
@@ -40,4 +69,3 @@ class ComplexClient:
             print("Connections already closed")
         finally:
             return
-        

@@ -11,6 +11,7 @@ from tools import generate_request, prepare_bytes_for_json, from_json_to_bytes
 from display_helper import pretty_print
 from nacl.hash import sha256
 import threading
+from pymongo import MongoClient
 
 class Verifier:
     def __init__(self, ca_cert_file, self_cert_file, key_file):
@@ -19,7 +20,6 @@ class Verifier:
         self.connections["TEE"] = TLSHelper(ca_cert_file, self_cert_file, key_file, is_server=True)
         self.tee_source_code = inspect.getsource(TEE_DB_Proxy)
         self.client_tee_source_code = inspect.getsource(ClientTEE)
-        self.approved_pipelines = ["AAA"]
         self.tee_public_key = None
         self.client_tee_public_key = None
         self.pending_verifications = {}
@@ -29,6 +29,9 @@ class Verifier:
         pretty_print("VERIFIER", "Initialized")
         self.listening = False
         self.threads = {}
+        client = MongoClient('localhost', 27017)
+        db = client['pipelines']
+        self.approved_pipelines = db['approved_pipelines']
         
     def set_tee_public_key(self, tee_public_key):
         self.tee_public_key = tee_public_key
@@ -102,9 +105,10 @@ class Verifier:
             evidence_hash = sha256(self.tee_source_code.encode('utf-8') + from_json_to_bytes(nonce))
         return evidence_hash
     
-    def compute_known_pipeline_evidence(self, pipeline_evidence, nonce):
+    def compute_known_pipeline_evidence(self, pipeline_name, nonce):
         try:
-            pipeline_hash = sha256(self.approved_pipelines[0].encode('utf-8') + from_json_to_bytes(nonce))
+            pipeline = self.approved_pipelines.find_one({"name": pipeline_name})["pipeline"]
+            pipeline_hash = sha256(str(pipeline).encode('utf-8') + from_json_to_bytes(nonce))
             return pipeline_hash
         except Exception as e:
             pretty_print("VERIFIER", f"Error computing pipeline evidence {e}")
@@ -140,8 +144,10 @@ class Verifier:
                     return attestation  
                 
     def generate_attestation_with_pipeline(self, request, connection):
+        print("HERE")
         request_json = json.loads(request)
         nonce = request_json['nonce']
+        pipeline_name = request_json['pipeline']
         evidence = request_json['evidence']
         pipeline_evidence = request_json['pipeline_evidence']
         pretty_print("VERIFIER", f"Pending ? {self.pending_verifications[nonce]}")
@@ -155,7 +161,7 @@ class Verifier:
                 pretty_print("VERIFIER", "Received evidence verified")
                 known_evidence = self.compute_known_evidence(nonce, connection)
                 pretty_print("VERIFIER", f"Known evidence {known_evidence}")    
-                known_pipeline_evidence = self.compute_known_pipeline_evidence(pipeline_evidence, nonce)
+                known_pipeline_evidence = self.compute_known_pipeline_evidence(pipeline_name, nonce)
                 pretty_print("VERIFIER", f"Known pipeline evidence {known_pipeline_evidence}, computed {received_pipeline}")
                 if(received_evidence == known_evidence and received_pipeline == known_pipeline_evidence):
                     try:
