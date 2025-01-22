@@ -6,7 +6,7 @@ import json
 import time
 from bson import ObjectId
 from TLS_helper import TLSHelper
-from tools import generate_request, prepare_bytes_for_json, from_json_to_bytes
+from tools import generate_request, prepare_bytes_for_json, from_json_to_bytes, write_data
 from display_helper import pretty_print
 from nacl.signing import SigningKey
 from nacl.hash import sha256
@@ -31,7 +31,7 @@ class TEE_DB_Proxy:
         self.private_signing_key = SigningKey.generate()
         self.public_signing_key = self.private_signing_key.verify_key
         self.verifier_public_key = verifier_public_key
-        pretty_print("TEE DB PROXY", "Initialized")
+        # pretty_print("TEE DB PROXY", "Initialized")
         self.methods = {
             "get_height",
             "get_bp"
@@ -43,6 +43,8 @@ class TEE_DB_Proxy:
         self.pipeline = None
         self.client = MongoClient(self.uri)
         self.db = self.client['medical-data']
+        self.start_time = None
+        self.file = os.getenv('FILE')
         
     def get_public_key(self):
         """
@@ -64,7 +66,7 @@ class TEE_DB_Proxy:
         self.connection_with_client.connect(tee_host, tee_port)
         if verifier_host and verifier_port:
             self.connection_with_verifier.connect(verifier_host, verifier_port)
-            pretty_print("TEE DB PROXY", "Connected to verifier")
+            # pretty_print("TEE DB PROXY", "Connected to verifier")
         self.listening = True
 
         while self.listening:
@@ -78,44 +80,56 @@ class TEE_DB_Proxy:
         :param request: The request received from the client.
         """
         request_json = json.loads(request)
-        pretty_print("TEE DB PROXY", "Received request", request_json)
+        # pretty_print("TEE DB PROXY", "Received request", request_json)
         try:
             if request_json['verb'] == 'GET' and request_json['route'] == 'evidence':
+                self.start_time = time.time()
                 nonce = request_json['nonce']
                 evidence = prepare_bytes_for_json(self.generate_evidence(request_json['nonce']))
                 self.send_evidence(evidence, nonce)
+                duration = time.time() - self.start_time
+                write_data(self.file, [datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S"), None, "Evidence generation Proxy", duration ])
             elif request_json['verb'] == 'GET' and request_json['route'] in self.methods:
+                self.start_time = time.time()
                 request_json['params']["attestation"] = False
                 response = self.execute_query(request_json)
-                pretty_print("TEE DB PROXY", f"Response {response}")
+                # pretty_print("TEE DB PROXY", f"Response {response}")
                 if any("attestation required" in item.values() for item in response):
+                    duration = time.time() - self.start_time
+                    write_data(self.file, [datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S"), None, "Query execution Proxy attestation required", duration])
                     attestation = self.start_attestation_protocol()
+                    self.start_time = time.time()
                     attestation = self.verify_attestation(attestation)
                     if attestation:
-                        pretty_print("TEE DB PROXY", "Attestation successful added to params")
+                        # pretty_print("TEE DB PROXY", "Attestation successful added to params")
                         request_json['params']["attestation"] = True
-                        pretty_print("TEE DB PROXY", f"Request with attestation {request_json}")
+                        # pretty_print("TEE DB PROXY", f"Request with attestation {request_json}")
                         response = self.execute_query(request_json)
-                        pretty_print("TEE DB PROXY", f"Response {response}")
+                        # pretty_print("TEE DB PROXY", f"Response {response}")
                         signed_result = self.sign_response(response)
-                        pretty_print("TEE DB PROXY", f"Query result {signed_result}")
+                        # pretty_print("TEE DB PROXY", f"Query result {signed_result}")
                         response = generate_request(["response"], [prepare_bytes_for_json(signed_result)])
                         self.send_response(response)
                     else:
                         response = generate_request(["error"], ["Attestation failed"])
                         self.send_response(response)
                         self.stop()
+                    duration = time.time() - self.start_time
+                    write_data(self.file, [datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S"), None, "Query execution Proxy with attestation", duration])
                 else:
                     signed_result = self.sign_response(response)
-                    pretty_print("TEE DB PROXY", f"Query result {signed_result}")
+                    # pretty_print("TEE DB PROXY", f"Query result {signed_result}")
                     response = generate_request(["response"], [prepare_bytes_for_json(signed_result)])
                     self.send_response(response)
+                    duration = time.time() - self.start_time
+                    write_data(self.file, [datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S"), None, "Query execution Proxy no attestation", duration])
+            
         except Exception as e:
-            pretty_print("TEE DB PROXY", f"Error: {e}")
-            if 'error' in request_json or 'close' in request_json:
-                pretty_print("TEE DB PROXY", "Received close request")
-                self.listening = False
-                self.stop()
+            # pretty_print("TEE DB PROXY", f"Error: {e}")
+            # if 'error' in request_json or 'close' in request_json:
+                # pretty_print("TEE DB PROXY", "Received close request")
+            self.listening = False
+            self.stop()
 
     def generate_evidence(self, nonce):
         """
@@ -126,7 +140,7 @@ class TEE_DB_Proxy:
         """
         source_code = inspect.getsource(TEE_DB_Proxy)
         evidence_hash = sha256(source_code.encode('utf-8') + from_json_to_bytes(nonce))
-        pretty_print("TEE DB PROXY", f"Generated evidence {evidence_hash}")
+        # pretty_print("TEE DB PROXY", f"Generated evidence {evidence_hash}")
         evidence = self.private_signing_key.sign(evidence_hash)
         return evidence
 
@@ -147,15 +161,13 @@ class TEE_DB_Proxy:
         :param query: The query to be executed.
         :return: The result of the query.
         """
-        pretty_print("TEE DB PROXY", f"Executing query {query}")
+        # pretty_print("TEE DB PROXY", f"Executing query {query}")
         user = self.authenticate_user(query['username'], query['password'])
         query['params']['user_id'] = user
         pipeline = self.get_pipeline(query['route'], query['params'])
-        print(pipeline)
         result = list(self.db.patients.aggregate(pipeline))
-        print(result)
         if any("attestation required" in item.values() for item in result):
-            pretty_print("TEE DB PROXY", "Attestation required")
+            # pretty_print("TEE DB PROXY", "Attestation required")
             return result
         return result
 
@@ -166,7 +178,7 @@ class TEE_DB_Proxy:
         :param response: The response to be signed.
         :return: The signed response.
         """
-        pretty_print("TEE DB PROXY", "Signing response", response)
+        # pretty_print("TEE DB PROXY", "Signing response", response)
         response = json.dumps(response)
         response = response.encode('utf-8')
         signature = self.private_signing_key.sign(response)
@@ -273,7 +285,7 @@ class TEE_DB_Proxy:
 
         :param response: The response to be sent.
         """
-        pretty_print("TEE DB PROXY", "Sending response", response)
+        # pretty_print("TEE DB PROXY", "Sending response", response)
         self.connection_with_client.send(response)
 
     def start_attestation_protocol(self):
@@ -282,11 +294,12 @@ class TEE_DB_Proxy:
 
         :return: The attestation result.
         """
-        pretty_print("TEE DB PROXY", "Starting attestation protocol")
+        # pretty_print("TEE DB PROXY", "Starting attestation protocol")
         nonce = self.request_nonce()
-        pretty_print("TEE DB PROXY", "Received nonce", nonce)
+        # pretty_print("TEE DB PROXY", "Received nonce", nonce)
+        self.start_time = time.time()
         evidence = self.request_evidence(nonce)
-        pretty_print("TEE DB PROXY", "Received evidence", evidence)
+        # pretty_print("TEE DB PROXY", "Received evidence", evidence)
         attestation = self.send_evidence_to_verifier(evidence)
         return attestation
 
@@ -296,7 +309,7 @@ class TEE_DB_Proxy:
 
         :return: The received nonce.
         """
-        pretty_print("TEE DB PROXY", "Requesting nonce")
+        # pretty_print("TEE DB PROXY", "Requesting nonce")
         request = generate_request(["verb", "route"], ["GET", "nonce"])
         self.connection_with_verifier.send(request)
         nonce = self.connection_with_verifier.receive()
@@ -312,7 +325,11 @@ class TEE_DB_Proxy:
         nonce = json.loads(nonce)['nonce']
         request = generate_request(["verb", "route", "nonce"], ["GET", "evidence", nonce])
         self.connection_with_client.send(request)
+        duration = time.time() - self.start_time
+        write_data(self.file, [datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S"), None, "Evidence request Proxy", duration])
         evidence = self.connection_with_client.receive()
+        if "error" in evidence:
+            self.stop()
         return evidence
 
     def send_evidence_to_verifier(self, evidence):
@@ -342,7 +359,7 @@ class TEE_DB_Proxy:
             self.connection_with_client.close()
             self.connection_with_verifier.close()
         except Exception:
-            print("Connections already closed")
+            pass
 
     def verify_attestation(self, attestation):
         """
@@ -361,6 +378,5 @@ class TEE_DB_Proxy:
             pretty_print("TEE DB PROXY", "Attestation expired")
             return False
         else:
-            pretty_print("TEE DB PROXY", "Attestation valid")
+            # pretty_print("TEE DB PROXY", "Attestation valid")
             return attestation
-
