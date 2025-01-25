@@ -97,7 +97,7 @@ class TEE_DB_Proxy:
     
     def query_execution_requested(self, request_json):
         attestation = self.send_evidence_to_verifier(request_json)
-        # request_json['params']["attestation"] = self.verify_attestation(attestation)
+        request_json['params']["attestation"] = self.verify_attestation(attestation)
         response = self.execute_query(request_json)
         signed_result = self.sign_result(response)
         self.send_result(signed_result)

@@ -58,6 +58,10 @@ class ClientTEE:
             print(f"Error occurred: {str(e)}")
             self.stop()
             
+    # =============================================================================
+    # Query Execution
+    # =============================================================================
+            
     def execute_query(self, request_json):
         self.loaded_pipeline = self.pipelines.find_one({"name": request_json["route"]})
         query_name = self.methods[request_json["route"]]
@@ -79,10 +83,18 @@ class ClientTEE:
         self.send_response(response)
         self.stop()
         
+    # =============================================================================
+    # Nonce request
+    # =============================================================================
+        
     def request_nonce(self):
         request = generate_json_from_lists(["method", "route"], ["GET", "nonce"])
         self.connection_with_verifier.send(request)
         return self.connection_with_verifier.receive()
+    
+    # =============================================================================
+    # Requesting and sending evidence
+    # =============================================================================
     
     def request_evidence(self, nonce, query_name):
         nonce = json.loads(nonce)["nonce"]
@@ -100,6 +112,10 @@ class ClientTEE:
         self.connection_with_verifier.send(request)
         return self.connection_with_verifier.receive()
     
+    # =============================================================================
+    # Attestation verification
+    # =============================================================================
+    
     def verify_attestation(self, attestation):
         try:
             attestation = json.loads(attestation)
@@ -114,6 +130,10 @@ class ClientTEE:
             return True
         except Exception as e:
             print(f"Error occurred: {str(e)}")
+            
+    # =============================================================================
+    # Evidence self generation
+    # =============================================================================
     
     def generate_evidence(self, evidence_requested):
         nonce = json.loads(evidence_requested)["requested_nonce"]
@@ -126,6 +146,10 @@ class ClientTEE:
         signed_loaded_pipeline_claim = self.private_signing_key.sign(loaded_pipeline_hash)
         
         return signed_source_code_claim, signed_loaded_pipeline_claim
+    
+    # =============================================================================
+    # Sending query and evidence
+    # =============================================================================
         
     def send_query(self, query, evidence_generated, evidence_requested):
         query["source_code_claim"] = prepare_bytes_for_json(evidence_generated[0])
@@ -137,6 +161,10 @@ class ClientTEE:
         query = json.dumps(query)
         self.connection_with_db_proxy.send(query)
         return self.connection_with_db_proxy.receive()
+    
+    # =============================================================================
+    # Response verification and processing
+    # =============================================================================
     
     def verify_response(self, response):   
         try:
@@ -154,6 +182,21 @@ class ClientTEE:
         pipeline = self.build_pipeline({"input_bp": data})
         response = list(self.bp.aggregate(pipeline))
         return response
+    
+    def sign_response(self, response):
+        response = json.dumps(response)
+        response = response.encode()
+        signed_response = self.private_signing_key.sign(response)
+        return signed_response
+    
+    def send_response(self, response):
+        response = generate_json_from_lists(["result"], [prepare_bytes_for_json(response)])
+        self.connection_with_client.send(response)
+    
+    
+    # =============================================================================
+    # Pipeline building and parameter validation
+    # =============================================================================
         
     def build_pipeline(self, params):
         for param_name, param_value in params.items():
@@ -184,23 +227,14 @@ class ClientTEE:
         else:
             raise ValueError(f"Invalid parameter name: {param_name}")
         
-    def sign_response(self, response):
-        response = json.dumps(response)
-        response = response.encode()
-        signed_response = self.private_signing_key.sign(response)
-        return signed_response
-    
-    def send_response(self, response):
-        response = generate_json_from_lists(["result"], [prepare_bytes_for_json(response)])
-        self.connection_with_client.send(response)
-    
+
     def stop(self):
+        self.listening = False
         try:
             close_request = generate_json_from_lists(["close"], ["close"])
             self.connection_with_verifier.send(close_request)
             self.connection_with_db_proxy.send(close_request)
             self.connection_with_client.send(close_request)
-            self.listening = False
             self.connection_with_verifier.close()
             self.connection_with_db_proxy.close()
             self.connection_with_client.close()

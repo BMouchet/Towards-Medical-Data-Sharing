@@ -61,6 +61,7 @@ class Verifier:
         self.threads["TEE"] = threading.Thread(target=self.handle_connection, args=("TEE",))
         self.threads["TEE"].start()
         
+        
     def dispatch_request(self, request, connection):    
         request_json = json.loads(request)
         try:
@@ -76,10 +77,15 @@ class Verifier:
             self.stop()
     
     def stop(self):
+        self.listening = False
+        for thread in self.threads:
+            try:
+                self.threads[thread].join()
+            except Exception as e:
+                pass
         try:
             for connection in self.connections:
                 self.connections[connection].close()
-            self.listening = False
         except Exception:
             pass
         

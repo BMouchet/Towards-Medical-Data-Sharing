@@ -1,5 +1,6 @@
 import queue
 import threading
+import time
 from client import Client
 from tee_db_proxy import TEE_DB_Proxy
 from verifier import Verifier
@@ -32,19 +33,20 @@ def handle_tee():
 def handle_client(query, result_queue):
     result = client.start(host, tee_port, host, verifier_port, query)
     result_queue.put(result)
+for i in range(100):
+    query = generate_json_from_lists(["method", "route", "username", "password", "params"], ["GET", "get_bp", "external1", "password", {"patient_id": "111111111111111111111111"}])
+    result_queue = queue.Queue()  
+    verifier_thread = threading.Thread(target=handle_verifier)
+    tee_thread = threading.Thread(target=handle_tee)
+    client_thread = threading.Thread(target=handle_client, args=(query, result_queue))
 
-query = generate_json_from_lists(["method", "route", "username", "password", "params"], ["GET", "get_bp", "patient1", "password", {"patient_id": "111111111111111111111111"}])
-result_queue = queue.Queue()  
-verifier_thread = threading.Thread(target=handle_verifier)
-tee_thread = threading.Thread(target=handle_tee)
-client_thread = threading.Thread(target=handle_client, args=(query, result_queue))
+    verifier_thread.start()
+    tee_thread.start()
+    client_thread.start()
 
-verifier_thread.start()
-tee_thread.start()
-client_thread.start()
+    client_thread.join()
+    verifier_thread.join()
+    tee_thread.join()
 
-client_thread.join()
-verifier_thread.join()
-tee_thread.join()
-
-print(result_queue.get())
+    print(result_queue.get(), i)
+    time.sleep(2)
