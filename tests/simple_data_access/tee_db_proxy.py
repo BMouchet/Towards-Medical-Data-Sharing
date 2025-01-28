@@ -1,3 +1,4 @@
+import datetime
 import inspect
 import json
 import logging
@@ -30,17 +31,17 @@ class TEE_DB_Proxy:
         self.uri = f'mongodb://{username}:{password}@localhost:27017/'
         self.loaded_pipeline = None
         self.client = MongoClient(self.uri)
-        self.db = self.client['medical-data']
+        self.db = self.client['test_dataset']
         self.logger = logging.getLogger(__name__)
         logging.basicConfig(filename='tee_db_proxy.log', level=logging.INFO)
-        ac = self.db['accessControls'].find_one({"_id": ObjectId("444444444444444444444444")})
-        print(ac)
-        
+        self.result_queue = None
+
     
     def get_public_key(self):
         return self.public_signing_key
     
-    def start(self, host, port):
+    def start(self, host, port, result_queue):
+        self.result_queue = result_queue
         self.connection_with_client.connect(host, port)
         self.listening = True
         while self.listening:
@@ -48,8 +49,8 @@ class TEE_DB_Proxy:
             self.dispatch_request(request) 
             
     def dispatch_request(self, request):
-        request_json = json.loads(request)
         try:
+            request_json = json.loads(request)
             if request_json["method"] == "GET":
                 if request_json["route"] == 'evidence':
                     self.evidence_requested(request_json)
@@ -73,10 +74,13 @@ class TEE_DB_Proxy:
     # =============================================================================
                     
     def evidence_requested(self, request_json):
+        start_time = time.time()
         nonce = request_json["nonce"]
         query_name = request_json["query_name"]
         evidence = self.generate_evidence(nonce, query_name)
         self.send_evidence(evidence, nonce)
+        duration = time.time() - start_time
+        self.result_queue.put(("Evidence generation (Proxy)", duration))
     
     def generate_evidence(self, nonce, query_name):
         source_code = inspect.getsource(TEE_DB_Proxy)
@@ -100,14 +104,26 @@ class TEE_DB_Proxy:
     def query_execution_requested(self, request_json):
         request_json['params']["attestation"] = False
         response = self.execute_query(request_json)
+        start_time = time.time()    
         signed_result = self.sign_result(response)
+        duration = time.time() - start_time
+        self.result_queue.put(("Siging Result (Proxy)", duration))
         self.send_result(signed_result)
             
     def execute_query(self, request_json):
+        start_time = time.time()
         user = self.authenticate_user(request_json['username'], request_json['password'])
+        duration = time.time() - start_time
+        self.result_queue.put(("Authentication", duration))
+        start_time = time.time()
         request_json['params']['user_id'] = user['_id']
         self.loaded_pipeline = self.build_pipeline(request_json['params'])
+        duration = time.time() - start_time
+        self.result_queue.put(("Building Pipeline", duration))
+        start_time = time.time()
         result = list(self.db.patients.aggregate(self.loaded_pipeline))
+        duration = time.time() - start_time
+        self.result_queue.put(("Pipeline Execution", duration))
         # Record track simulation
         self.logger.info(
             f"{time.strftime('%Y-%m-%d %H:%M:%S', time.localtime())}: User {user['_id']} executed query {request_json['route']} with parameters {request_json['params']}"

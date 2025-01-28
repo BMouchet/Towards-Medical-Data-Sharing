@@ -22,13 +22,17 @@ class TLSHelper:
                     raw_socket.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
                     raw_socket.bind((host, port))
                     raw_socket.listen(1)
+                    # print("Server listening...")
                     conn, addr = raw_socket.accept()
+                    # print(f"Accepted connection from {addr}")
                     self.socket_ = self.context.wrap_socket(conn, server_side=True)
                 else:
                     raw_socket.connect((host, port))
                     self.socket_ = self.context.wrap_socket(raw_socket, server_side=False, server_hostname=host)
+                # print("Connection established.")
                 return
             except Exception as e:
+                # print(f"Connection attempt {attempt + 1}/{max_tries} failed: {e}")
                 time.sleep(delay)
         raise ConnectionError("Failed to establish connection after multiple attempts")
 
@@ -46,7 +50,12 @@ class TLSHelper:
         return data.decode('utf-8')
 
     def close(self):
-        if self.socket_:
-            self.socket_.shutdown(socket.SHUT_RDWR)
-            self.socket_.close()
-            self.socket_ = None
+        try:
+            if self.socket_:
+                self.socket_.shutdown(socket.SHUT_RDWR)
+                self.socket_.close()
+                self.socket_ = None
+                # print("Connection closed.")
+        except Exception as e:
+            # print(f"Error closing connection: {e}")
+            pass

@@ -1,6 +1,6 @@
+import base64
 import inspect
 import json
-import logging
 import time
 from bson import ObjectId
 from TLS_helper import TLSHelper
@@ -10,13 +10,15 @@ from nacl.hash import sha256
 from pymongo import MongoClient
 import os
 import dotenv
+import logging
 
 class TEE_DB_Proxy:
     # =============================================================================
     # Setup
     # =============================================================================
-    def __init__(self, ca_cert_file, self_cert_file, key_file):
+    def __init__(self, ca_cert_file, self_cert_file, key_file, verifier_public_key):
         self.connection_with_client = TLSHelper(ca_cert_file, self_cert_file, key_file, is_server=True)
+        self.connection_with_verifier = TLSHelper(ca_cert_file, self_cert_file, key_file, is_server=False)
         self.listening = False
         self.private_signing_key = SigningKey.generate()
         self.public_signing_key = self.private_signing_key.verify_key
@@ -30,18 +32,20 @@ class TEE_DB_Proxy:
         self.uri = f'mongodb://{username}:{password}@localhost:27017/'
         self.loaded_pipeline = None
         self.client = MongoClient(self.uri)
-        self.db = self.client['medical-data']
+        self.db = self.client['test_dataset']
+        self.verifier_public_key = verifier_public_key
         self.logger = logging.getLogger(__name__)
         logging.basicConfig(filename='tee_db_proxy.log', level=logging.INFO)
-        ac = self.db['accessControls'].find_one({"_id": ObjectId("444444444444444444444444")})
-        print(ac)
-        
+        self.result_queue = None
+        self.start_time = None
     
     def get_public_key(self):
         return self.public_signing_key
     
-    def start(self, host, port):
-        self.connection_with_client.connect(host, port)
+    def start(self, tee_host, tee_port, verifier_host, verifier_port, result_queue):
+        self.result_queue = result_queue
+        self.connection_with_client.connect(tee_host, tee_port)
+        self.connection_with_verifier.connect(verifier_host, verifier_port)
         self.listening = True
         while self.listening:
             request = self.connection_with_client.receive()
@@ -65,6 +69,7 @@ class TEE_DB_Proxy:
         self.listening = False
         try:
             self.connection_with_client.close()
+            self.connection_with_verifier.close()
         except Exception:
             pass
                   
@@ -73,10 +78,14 @@ class TEE_DB_Proxy:
     # =============================================================================
                     
     def evidence_requested(self, request_json):
-        nonce = request_json["nonce"]
+        self.start_time = time.time()
+        received_nonce = request_json["nonce"]
+        requested_nonce = self.request_nonce()
+        self.start_time = time.time()
         query_name = request_json["query_name"]
-        evidence = self.generate_evidence(nonce, query_name)
-        self.send_evidence(evidence, nonce)
+        evidence = self.generate_evidence(received_nonce, query_name)
+        self.send_evidence_to_client(evidence, received_nonce, requested_nonce)
+
     
     def generate_evidence(self, nonce, query_name):
         source_code = inspect.getsource(TEE_DB_Proxy)
@@ -86,34 +95,51 @@ class TEE_DB_Proxy:
         self.loaded_pipeline = self.db['pipelines'].find_one({"name": query_name})["pipeline"]
         loaded_pipeline_hash = sha256(str(self.loaded_pipeline).encode() + from_json_to_bytes(nonce))
         signed_loaded_pipeline_claim = self.private_signing_key.sign(loaded_pipeline_hash)
-        
         return signed_source_code_claim, signed_loaded_pipeline_claim
         
-    def send_evidence(self, evidence, nonce):
-        response = generate_json_from_lists(["source_code_claim", "loaded_pipeline_claim", "nonce"], [prepare_bytes_for_json(evidence[0]), prepare_bytes_for_json(evidence[1]), nonce])
+    def send_evidence_to_client(self, evidence, received_nonce, requested_nonce):
+        response = generate_json_from_lists(["source_code_claim", "loaded_pipeline_claim", "received_nonce", "requested_nonce"], [prepare_bytes_for_json(evidence[0]), prepare_bytes_for_json(evidence[1]), received_nonce, requested_nonce])
         self.connection_with_client.send(response)
+        duration = time.time() - self.start_time
+        self.result_queue.put(("Evidence generation (Proxy)", duration))
         
     # =============================================================================
     # Query Execution
     # =============================================================================
     
     def query_execution_requested(self, request_json):
-        request_json['params']["attestation"] = False
+        self.start_time = time.time()
+        attestation = self.send_evidence_to_verifier(request_json)
+        start_time = time.time()
+        request_json['params']["attestation"] = self.verify_attestation(attestation)
+        duration = time.time() - start_time
+        self.result_queue.put(("Attestation Verification (Proxy)", duration))
         response = self.execute_query(request_json)
+        start_time = time.time()
         signed_result = self.sign_result(response)
+        duration = time.time() - start_time
         self.send_result(signed_result)
+        self.result_queue.put(("Signing Result (Proxy)", duration))
             
     def execute_query(self, request_json):
+        start_time = time.time()
         user = self.authenticate_user(request_json['username'], request_json['password'])
+        duration = time.time() - start_time
+        self.result_queue.put(("Authentication", duration))
+        start_time = time.time()
         request_json['params']['user_id'] = user['_id']
         self.loaded_pipeline = self.build_pipeline(request_json['params'])
+        duration = time.time() - start_time
+        self.result_queue.put(("Building Pipeline", duration))
+        start_time = time.time()
         result = list(self.db.patients.aggregate(self.loaded_pipeline))
+        duration = time.time() - start_time
+        self.result_queue.put(("Pipeline Execution", duration))
         # Record track simulation
         self.logger.info(
             f"{time.strftime('%Y-%m-%d %H:%M:%S', time.localtime())}: User {user['_id']} executed query {request_json['route']} with parameters {request_json['params']}"
         )
         return result
-    
     def sign_result(self, result):
         result = json.dumps(result)
         result = result.encode()
@@ -132,6 +158,46 @@ class TEE_DB_Proxy:
         if user is None:
             raise Exception("Invalid username or password")
         return user
+    
+    # =============================================================================
+    # Mutual Attestation Process
+    # =============================================================================
+
+    def request_nonce(self):
+        request = generate_json_from_lists(["method", "route"], ["GET", "nonce"])
+        duration = time.time() - self.start_time
+        self.result_queue.put(("Nonce request by proxy", duration))
+        self.connection_with_verifier.send(request)
+        nonce = self.connection_with_verifier.receive()
+        self.start_time = time.time()
+        return nonce
+    
+    def send_evidence_to_verifier(self, request_json):
+        try:
+            evidence = request_json
+            source_code_claim = evidence["source_code_claim"]
+            loaded_pipeline_claim = evidence["loaded_pipeline_claim"]
+            received_nonce = evidence["nonce"]
+            request = generate_json_from_lists(["method", "route", "source_code_claim", "loaded_pipeline_claim", "nonce", "query_name"], ["GET", "attestation", source_code_claim, loaded_pipeline_claim, received_nonce, request_json["loaded_pipeline"]])
+            duration = time.time() - self.start_time
+            self.result_queue.put(("Evidence sent to Verifier by proxy", duration))
+            self.connection_with_verifier.send(request)
+            return self.connection_with_verifier.receive()
+        except Exception as e:  
+            print(f"Error occurred: {str(e)}")
+            
+    def verify_attestation(self, attestation):
+        try:
+            attestation = json.loads(attestation)
+            attestation_signature = attestation['attestation']
+            attestation_signature = base64.b64decode(attestation_signature)
+            attestation = self.verifier_public_key.verify(attestation_signature)
+            expiration = json.loads(attestation)["expiration"]
+            if time.time() > expiration:
+                return False
+            return True
+        except Exception as e:
+            print(f"Error occurred: {str(e)}")
     
     # =============================================================================
     # Pipeline Building Tools

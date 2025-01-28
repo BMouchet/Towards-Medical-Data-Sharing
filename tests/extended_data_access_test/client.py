@@ -13,14 +13,15 @@ class Client:
         self.personal_tee_public_key = personal_tee_public_key
         
     def start(self, personal_tee_host, personal_tee_port, query):
-        self.connection_with_peronal_tee.connect(personal_tee_host, personal_tee_port)
+        self.connection_with_peronal_tee.connect(personal_tee_host, personal_tee_port)        
+        start_time = time.time()        
         response = self.send_query(query)
         response = self.read_response(response)
+        duration = time.time() - start_time
         self.stop()
-        return response
+        return response, duration
     
     def send_query(self, query):
-        print(query)
         self.connection_with_peronal_tee.send(query)
         response = self.connection_with_peronal_tee.receive()
         return response

@@ -10,6 +10,7 @@ from nacl.hash import sha256
 from pymongo import MongoClient
 import os
 import dotenv
+import logging
 
 class TEE_DB_Proxy:
     # =============================================================================
@@ -33,6 +34,8 @@ class TEE_DB_Proxy:
         self.client = MongoClient(self.uri)
         self.db = self.client['medical-data']
         self.verifier_public_key = verifier_public_key
+        self.logger = logging.getLogger(__name__)
+        logging.basicConfig(filename='tee_db_proxy.log', level=logging.INFO)
     
     def get_public_key(self):
         return self.public_signing_key
@@ -107,6 +110,10 @@ class TEE_DB_Proxy:
         request_json['params']['user_id'] = user['_id']
         self.loaded_pipeline = self.build_pipeline(request_json['params'])
         result = list(self.db.patients.aggregate(self.loaded_pipeline))
+        # Record track simulation
+        self.logger.info(
+            f"{time.strftime('%Y-%m-%d %H:%M:%S', time.localtime())}: User {user['_id']} executed query {request_json['route']} with parameters {request_json['params']}"
+        )
         return result
     
     def sign_result(self, result):
