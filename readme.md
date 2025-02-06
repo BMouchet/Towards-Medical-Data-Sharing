@@ -8,3 +8,5 @@ Benjamin Mouchet, year 2024-2025
 5. Run the `src/tests/populate_db.py` file to populate the data. (The entries value can be reduced if you want than a million documents)
 5. You then can run the `[simple|extended] data access` main files to test the interactions between the clients or the same folders in the `tests` folder if you want to generate your data.
 6. A Jupyter Notebook with the results is available in the `tests` folder
+
+_These steps where tested on a Ubuntu WSL on Windows 11_ 
