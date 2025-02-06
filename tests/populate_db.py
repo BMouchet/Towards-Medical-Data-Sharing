@@ -25,33 +25,33 @@ entries = 1000000
 
 pipelines = [
     {
-    "_id": ObjectId(),
-    "name": "is_bp_above_mean",
-    "pipeline": [
-        {
-            "$group": {
-                "_id": None,
-                "mean_bp": {"$avg": "$bp"}
-            }
-        },
-        {
-            "$project": {
-                "_id": 0,  
-                "mean_bp": 1,
-                "is_above": {
-                    "$cond": [
-                        {"$gt": ["$input_bp", "$mean_bp"]},  
-                        "1",
-                        {"$cond": [
-                            {"$lt": ["$input_bp", "$mean_bp"]},  
-                            "-1",
-                            "0"  
-                        ]}
-                    ]
+        "_id": ObjectId(),
+        "name": "is_bp_above_mean",
+        "pipeline": [
+            {
+                "$group": {
+                    "_id": None,
+                    "mean_bp": {"$avg": "$bp"}
+                }
+            },
+            {
+                "$project": {
+                    "_id": 0,  
+                    "mean_bp": 1,
+                    "is_above": {
+                        "$cond": [
+                            {"$gt": ["$input_bp", "$mean_bp"]},  
+                            "1",
+                            {"$cond": [
+                                {"$lt": ["$input_bp", "$mean_bp"]},  
+                                "-1",
+                                "0"  
+                            ]}
+                        ]
+                    }
                 }
             }
-        }
-    ],
+        ],
     },
     {
         "_id": ObjectId(),
@@ -726,3 +726,6 @@ for i in range(entries):
     bp_collection.insert_one(bp)
     
 print("Populated blood pressure data")
+
+pipeline_collection.create_index([("name", 1)], unique=True)
+patient_collection.create_index([("patientId", 1)], unique=True)
